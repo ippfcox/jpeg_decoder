@@ -115,6 +115,11 @@ struct block
     int coefficient[64];
 };
 
+struct MCU
+{
+    struct block *Ys, *Cbs, *Crs;
+};
+
 struct context
 {
     FILE *fp;
@@ -134,6 +139,9 @@ struct context
     struct start_of_scan SOS;
     uint8_t *compress_data;
     uint8_t *ptr_EOI;
+
+    int dc_global_coefficient[4]; // 1为Y的，2为Cb的，3为Cr的
+    struct MCU *mcus;
 };
 
 void usage(const char *name)
@@ -388,9 +396,8 @@ int calculate_coefficient_vli(uint8_t value, uint8_t mask)
     return coeff;
 }
 
-void read_block(struct context *ctx, int color_id)
+void read_block(struct context *ctx, int color_id, struct block *blk)
 {
-    int values[64] = {0};
     int count_values = 0;
     struct define_huffman_table *dc_dht = NULL, *ac_dht = NULL;
     find_DHT_by_color_id(ctx, color_id, &dc_dht, &ac_dht); // Y是1
@@ -431,7 +438,8 @@ void read_block(struct context *ctx, int color_id)
                 if (!found_dc) // 如果之前没有dc，那么这个是dc，没有后续解析
                 {
                     found_dc = 1;
-                    values[count_values++] =calculate_coefficient_vli(test_value, test_mask);
+                    ctx->dc_global_coefficient[color_id] += calculate_coefficient_vli(test_value, test_mask);
+                    blk->coefficient[count_values++] = ctx->dc_global_coefficient[color_id];
                 }
                 else // 处理ac，稍微复杂
                 {
@@ -444,7 +452,7 @@ void read_block(struct context *ctx, int color_id)
                     uint8_t next_zero_count = (test_value >> 4) & 0x0F; // 高4位为接下来有几个0
                     for (int k = 0; k < next_zero_count; ++k)
                     {
-                        values[count_values++] = 0;
+                        blk->coefficient[count_values++] = 0;
                     }
 
                     uint8_t next_value_bit_count = (test_value >> 0) & 0x0F; // 低4位为接下来的数需要读几个bit
@@ -459,7 +467,7 @@ void read_block(struct context *ctx, int color_id)
                             next_mask |= 0x01;
                         }
 
-                        values[count_values++] = calculate_coefficient_vli(next_value, next_mask);
+                        blk->coefficient[count_values++] = calculate_coefficient_vli(next_value, next_mask);
                     }
                 }
                 found = 0;
@@ -469,19 +477,19 @@ void read_block(struct context *ctx, int color_id)
 
         if (found_0x00)
         {
-            log_("found 0x00, finish, total: %d\n", count_values);
+            // log_("found 0x00, finish, total: %d\n", count_values);
             break;
         }
     }
 
     for (int i = 0; i < 64; ++i)
     {
-        printf("%d ", values[i]);
+        printf("%d ", blk->coefficient[i]);
     }
     printf("\n");
 }
 
-void read_MCU(struct context *ctx)
+void read_MCU(struct context *ctx, struct MCU *mcu)
 {
     int horizontal_Y_block_count = ctx->SOF0.channel_info[0].horizontal_sample_rate;
     int vertical_Y_block_count = ctx->SOF0.channel_info[0].vertical_sample_rate;
@@ -490,25 +498,29 @@ void read_MCU(struct context *ctx)
     int horizontal_Cr_block_count = ctx->SOF0.channel_info[2].horizontal_sample_rate;
     int vertical_Cr_block_count = ctx->SOF0.channel_info[2].vertical_sample_rate;
 
+    mcu->Ys = calloc(horizontal_Y_block_count * vertical_Y_block_count, sizeof(struct block));
+    mcu->Cbs= calloc(horizontal_Cb_block_count * vertical_Cb_block_count, sizeof(struct block));
+    mcu->Crs = calloc(horizontal_Cr_block_count * vertical_Cr_block_count, sizeof(struct block));
+
     for (int i = 0; i < vertical_Y_block_count; ++i)
     {
         for (int j = 0; j < horizontal_Y_block_count; ++j)
         {
-            read_block(ctx, 1);
+            read_block(ctx, 1, &mcu->Ys[i * horizontal_Y_block_count + j]);
         }
     }
     for (int i = 0; i < vertical_Cb_block_count; ++i)
     {
         for (int j = 0; j < horizontal_Cb_block_count; ++j)
         {
-            read_block(ctx, 2);
+            read_block(ctx, 2, &mcu->Ys[i * horizontal_Cb_block_count + j]);
         }
     }
     for (int i = 0; i < vertical_Cr_block_count; ++i)
     {
         for (int j = 0; j < horizontal_Cr_block_count; ++j)
         {
-            read_block(ctx, 3);
+            read_block(ctx, 3, &mcu->Ys[i * horizontal_Cr_block_count + j]);
         }
     }
 }
@@ -518,11 +530,13 @@ void read_compressed_data(struct context *ctx)
     int horizontal_MCU_count = ctx->SOF0.width / ctx->SOF0.channel_info[0].horizontal_sample_rate;
     int vertical_MCU_count = ctx->SOF0.height / ctx->SOF0.channel_info[0].vertical_sample_rate;
 
+    ctx->mcus = calloc(horizontal_MCU_count * vertical_MCU_count, sizeof(struct MCU));
+
     for (int i = 0; i < vertical_MCU_count; ++i)
     {
         for (int j = 0; j < horizontal_MCU_count; ++j)
         {
-            read_MCU(ctx);
+            read_MCU(ctx, &ctx->mcus[i * horizontal_MCU_count + j]);
         }
     }
 }
@@ -600,7 +614,7 @@ int main(int argc, char *argv[])
     // dump_SOF0(ctx);
     // dump_SOS(ctx);
 
-    read_MCU(ctx);
+    read_compressed_data(ctx);
 
 error:
 #define free_seg(type)                \
