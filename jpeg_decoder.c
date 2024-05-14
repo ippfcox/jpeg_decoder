@@ -110,12 +110,18 @@ struct start_of_scan
     uint8_t not_baseline_2;
 };
 
+struct block
+{
+    int coefficient[64];
+};
+
 struct context
 {
     FILE *fp;
     int length;
     uint8_t *buffer;
-    uint8_t *ptr; // running pointer
+    uint8_t *ptr;      // running pointer
+    size_t bit_offset; // running
 
     uint8_t *ptr_SOI;
     uint8_t **ptr_APP0s;
@@ -143,6 +149,19 @@ uint8_t get_byte(struct context *ctx)
 uint16_t get_2bytes(struct context *ctx)
 {
     return get_byte(ctx) << 8 | get_byte(ctx);
+}
+
+uint8_t get_bit(struct context *ctx)
+{
+    int bit_byte_offset = ctx->bit_offset % 8; // 在该字节中的位偏移量
+    int byte_offset = ctx->bit_offset / 8;     // 所在字节的偏移量
+    if (*(ctx->compress_data + byte_offset) == 0x00 && *(ctx->compress_data + byte_offset - 1) == 0xFF)
+    {
+        log_("jump 0xFF00, offset: %lx-%ld\n", ctx->compress_data - ctx->buffer, ctx->bit_offset);
+        ctx->bit_offset += 8;
+    }
+
+    return ((*(ctx->compress_data + ctx->bit_offset / 8)) >> (7 - ctx->bit_offset++ % 8)) & 0x01;
 }
 
 uint16_t read_bits(struct context *ctx, int start, int length)
@@ -325,38 +344,185 @@ void dump_SOS(struct context *ctx)
     printf("\n");
 }
 
-void read_block() {}
-
-void read_MCU(struct context *ctx)
+struct define_huffman_table *find_DHT_by_type_and_id(struct context *ctx, int ac_dc_type, int table_id)
 {
-    for (int i = 0; i < 16; ++i)
-        printf("%02x ", *(ctx->compress_data + i));
-    printf("\n");
-    int start = 0;
-    int length = 2;
-    while (1)
+    for (int i = 0; i < ctx->count_DHTs; ++i)
     {
-        uint16_t code = read_bits(ctx, start, length);
-
-        int found = 0;
-        for (int i = 0; i < ctx->DHTs[0].leave_count_total; ++i)
+        if (ctx->DHTs[i].ac_dc_type == ac_dc_type && ctx->DHTs[i].table_id == table_id)
         {
-            if (code == ctx->DHTs[0].items[i].code)
+            return &ctx->DHTs[i];
+        }
+    }
+
+    return NULL;
+}
+
+// 根据color_id(YCbCr)找到相应的直流霍夫曼表和交流霍夫曼表
+void find_DHT_by_color_id(struct context *ctx, int color_id, struct define_huffman_table **dc_dht, struct define_huffman_table **ac_dht)
+{
+    for (int i = 0; i < ctx->SOS.color_channel_count; ++i)
+    {
+        struct start_of_scan_channel_info *sos = &ctx->SOS.channel_info[i];
+        if (sos->color_id == color_id)
+        {
+            *dc_dht = find_DHT_by_type_and_id(ctx, 0, sos->dc_dht_id); // 直流是0
+            *ac_dht = find_DHT_by_type_and_id(ctx, 1, sos->ac_dht_id); // 交流是1
+        }
+    }
+}
+
+int calculate_coefficient_vli(uint8_t value, uint8_t mask)
+{
+    int value_bit_count = 0;
+    uint8_t tmp = mask;
+    while (tmp)
+    {
+        tmp &= (tmp - 1);
+        value_bit_count++;
+    }
+
+    int coeff = (int)value;
+    if (value >> (value_bit_count - 1) == 0)
+        coeff = -((!value) & mask);
+
+    return coeff;
+}
+
+void read_block(struct context *ctx, int color_id)
+{
+    int values[64] = {0};
+    int count_values = 0;
+    struct define_huffman_table *dc_dht = NULL, *ac_dht = NULL;
+    find_DHT_by_color_id(ctx, color_id, &dc_dht, &ac_dht); // Y是1
+    // [TODO] check pointer
+
+    int found_dc = 0;                          // 标识是否处理了第一个数（直流分量），这会影响使用哪个DHT
+    int found_0x00 = 0;                        // 标识是否遇到了0x00，如果遇到，说明该block解析结束
+    struct define_huffman_table *dht = dc_dht; // 首先查找直流分量
+    while (count_values < 64)                  // 一共就64个数
+    {
+        if (found_dc)
+            dht = ac_dht; // 找到了直流分量尝试查找交流分量
+
+        uint16_t test_code = 0, test_mask = 0; // 要与霍夫曼表匹配的码字和mask
+        uint8_t test_value = 0;                // 霍夫曼表中该码字对应的值
+        int found = 0;                         // 标识查找到当前码字
+        for (int i = 0; i < 16; ++i)           // 一共最长就16位
+        {
+            test_code <<= 1;
+            test_code |= get_bit(ctx);
+            test_mask <<= 1;
+            test_mask |= 0x01;
+            // printf("test_code: %x\n", test_code);
+            for (int j = 0; j < dht->leave_count_total; ++j) // 遍历dht表
             {
-                printf("code: %x, value: %x\n", ctx->DHTs[0].items[i].code, ctx->DHTs[0].items[i].value);
-                found = 1;
+                struct define_huffman_table_code_item *item = &dht->items[j];
+                if (test_mask == item->mask && test_code == item->code) // 位数相同（mask）并且code相同为找到
+                {
+                    found = 1;
+                    test_value = item->value;
+                    // printf("code: %x, value: %x, mask: %x\n", item->code, item->value, item->mask);
+                    break;
+                }
+            }
+
+            if (found) // 与霍夫曼表成功匹配，解析值
+            {
+                if (!found_dc) // 如果之前没有dc，那么这个是dc，没有后续解析
+                {
+                    found_dc = 1;
+                    values[count_values++] =calculate_coefficient_vli(test_value, test_mask);
+                }
+                else // 处理ac，稍微复杂
+                {
+                    if (test_value == 0x00) // 如果找到0x00，后面全0，可以结束
+                    {
+                        found_0x00 = 1;
+                        break;
+                    }
+
+                    uint8_t next_zero_count = (test_value >> 4) & 0x0F; // 高4位为接下来有几个0
+                    for (int k = 0; k < next_zero_count; ++k)
+                    {
+                        values[count_values++] = 0;
+                    }
+
+                    uint8_t next_value_bit_count = (test_value >> 0) & 0x0F; // 低4位为接下来的数需要读几个bit
+                    if (next_value_bit_count > 0)
+                    {
+                        uint16_t next_value = 0, next_mask = 0; // 读取指定bit出来的码字，需要使用VLI表进行解码
+                        for (int k = 0; k < next_value_bit_count; ++k)
+                        {
+                            next_value <<= 1;
+                            next_value |= get_bit(ctx);
+                            next_mask <<= 1;
+                            next_mask |= 0x01;
+                        }
+
+                        values[count_values++] = calculate_coefficient_vli(next_value, next_mask);
+                    }
+                }
+                found = 0;
                 break;
             }
         }
 
-        if (!found)
+        if (found_0x00)
         {
-            length++;
+            log_("found 0x00, finish, total: %d\n", count_values);
+            break;
         }
-        else
+    }
+
+    for (int i = 0; i < 64; ++i)
+    {
+        printf("%d ", values[i]);
+    }
+    printf("\n");
+}
+
+void read_MCU(struct context *ctx)
+{
+    int horizontal_Y_block_count = ctx->SOF0.channel_info[0].horizontal_sample_rate;
+    int vertical_Y_block_count = ctx->SOF0.channel_info[0].vertical_sample_rate;
+    int horizontal_Cb_block_count = ctx->SOF0.channel_info[1].horizontal_sample_rate;
+    int vertical_Cb_block_count = ctx->SOF0.channel_info[1].vertical_sample_rate;
+    int horizontal_Cr_block_count = ctx->SOF0.channel_info[2].horizontal_sample_rate;
+    int vertical_Cr_block_count = ctx->SOF0.channel_info[2].vertical_sample_rate;
+
+    for (int i = 0; i < vertical_Y_block_count; ++i)
+    {
+        for (int j = 0; j < horizontal_Y_block_count; ++j)
         {
-            start += length;
-            length = 2;
+            read_block(ctx, 1);
+        }
+    }
+    for (int i = 0; i < vertical_Cb_block_count; ++i)
+    {
+        for (int j = 0; j < horizontal_Cb_block_count; ++j)
+        {
+            read_block(ctx, 2);
+        }
+    }
+    for (int i = 0; i < vertical_Cr_block_count; ++i)
+    {
+        for (int j = 0; j < horizontal_Cr_block_count; ++j)
+        {
+            read_block(ctx, 3);
+        }
+    }
+}
+
+void read_compressed_data(struct context *ctx)
+{
+    int horizontal_MCU_count = ctx->SOF0.width / ctx->SOF0.channel_info[0].horizontal_sample_rate;
+    int vertical_MCU_count = ctx->SOF0.height / ctx->SOF0.channel_info[0].vertical_sample_rate;
+
+    for (int i = 0; i < vertical_MCU_count; ++i)
+    {
+        for (int j = 0; j < horizontal_MCU_count; ++j)
+        {
+            read_MCU(ctx);
         }
     }
 }
@@ -429,10 +595,10 @@ int main(int argc, char *argv[])
         // log_("marker: %lu %s\n", ctx->ptr - ctx->buffer, marker_name(byte));
     }
 
-    dump_DQTs(ctx);
-    dump_DHTs(ctx);
-    dump_SOF0(ctx);
-    dump_SOS(ctx);
+    // dump_DQTs(ctx);
+    // dump_DHTs(ctx);
+    // dump_SOF0(ctx);
+    // dump_SOS(ctx);
 
     read_MCU(ctx);
 
