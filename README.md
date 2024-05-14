@@ -12,3 +12,14 @@ a simple jpeg decoder, implement from zero to learn its compress algorithm.
 4. DHT解析：完成，验证中
 5. SOS解析：完成
 6. 图像解析，MCU、block...，未开始
+
+IDCT:
+
+$$ result[i][j] = \frac{1}{4}\sum{_{x=0} ^7}\sum{_{y=0} ^7}C_x C_y cos(\frac{(2i + 1)x\pi}{16}) cos (\frac{(2j + 1)y\pi}{16}) block[x][y] 
+$$
+$$
+C_0 = \frac{1}{\sqrt{2}}​
+$$
+$$
+C_i = 1, \forall i > 0
+$$

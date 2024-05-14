@@ -1,3 +1,4 @@
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,19 @@
 #define SEG_DHT 0xC4  // define huffman table
 #define SEG_SOS 0xDA  // start of scan
 #define SEG_EOI 0xD9  // end of image
+
+#define PI 3.14159265358923846
+
+uint8_t dezigzag[8][8] = {
+    {0,1,5,6,14,15,27,28,},
+    {2,4,7,13,16,26,29,42,},
+    {3,8,12,17,25,30,41,43,},
+    {9,11,18,24,31,40,44,53,},
+    {10,19,23,32,39,45,52,54,},
+    {20,22,33,38,46,51,55,60,},
+    {21,34,37,47,50,56,59,61,},
+    {35,36,48,49,57,58,62,63,},
+};
 
 const char *marker_name(int seg_id)
 {
@@ -41,6 +55,7 @@ struct define_quantization_table
     int length;            // 不包含0xFFDB，包含长度字节的总长度
     int quantization_size; // 标识字节的高4位，标识每个量化值大小，0:1byte/1:2bytes
     int id;                // 标识字节的低4位，id可为0/1/2/3
+    uint8_t values[8][8];  // 表值
 };
 
 struct define_huffman_table_code_item
@@ -112,7 +127,10 @@ struct start_of_scan
 
 struct block
 {
-    int coefficient[64];
+    int coefficient[8][8];
+    int dequantized[8][8];
+    int dezigzaged[8][8];
+    int idcted[8][8];
 };
 
 struct MCU
@@ -191,6 +209,14 @@ void read_DQT(struct context *ctx)
     uint8_t byte = get_byte(ctx);
     dqt->quantization_size = (byte >> 4) & 0x0F;
     dqt->id = byte & 0x0F;
+
+    for (int i = 0; i < 8; ++i)
+    {
+        for (int j = 0; j < 8; ++j)
+        {
+            dqt->values[i][j] = get_byte(ctx);
+        }
+    }
 }
 
 void dump_DQTs(struct context *ctx)
@@ -201,6 +227,15 @@ void dump_DQTs(struct context *ctx)
     {
         struct define_quantization_table *dqt = &ctx->DQTs[i];
         printf(" %p\t%ld\t%d\t%d\t\t%d\n", dqt->ptr, dqt->ptr - ctx->buffer, dqt->length, dqt->quantization_size, dqt->id);
+        for (int j = 0; j < 8; ++j)
+        {
+            printf("  ");
+            for (int k = 0; k < 8; ++k)
+            {
+                printf("%3d ", dqt->values[j][k]);
+            }
+            printf("\n");
+        }
     }
     printf("\n");
 }
@@ -370,13 +405,33 @@ void find_DHT_by_color_id(struct context *ctx, int color_id, struct define_huffm
 {
     for (int i = 0; i < ctx->SOS.color_channel_count; ++i)
     {
-        struct start_of_scan_channel_info *sos = &ctx->SOS.channel_info[i];
-        if (sos->color_id == color_id)
+        struct start_of_scan_channel_info *info = &ctx->SOS.channel_info[i];
+        if (info->color_id == color_id)
         {
-            *dc_dht = find_DHT_by_type_and_id(ctx, 0, sos->dc_dht_id); // 直流是0
-            *ac_dht = find_DHT_by_type_and_id(ctx, 1, sos->ac_dht_id); // 交流是1
+            *dc_dht = find_DHT_by_type_and_id(ctx, 0, info->dc_dht_id); // 直流是0
+            *ac_dht = find_DHT_by_type_and_id(ctx, 1, info->ac_dht_id); // 交流是1
         }
     }
+}
+
+struct define_quantization_table* find_DQT_by_color_id(struct context *ctx, int color_id)
+{
+    for (int i = 0; i< ctx->SOF0.color_channel_count; ++i)
+    {
+        struct start_of_frame_0_channel_info *info = &ctx->SOF0.channel_info[i];
+        if (info->color_id == color_id)
+        {
+            for (int j = 0; j < ctx->count_DQTs; ++j)
+            {
+                if (ctx->DQTs[j].id == info->dqt_table_id)
+                {
+                    return &ctx->DQTs[j];
+                }
+            }
+        }
+    }
+
+    return NULL;
 }
 
 int calculate_coefficient_vli(uint8_t value, uint8_t mask)
@@ -439,7 +494,8 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
                 {
                     found_dc = 1;
                     ctx->dc_global_coefficient[color_id] += calculate_coefficient_vli(test_value, test_mask);
-                    blk->coefficient[count_values++] = ctx->dc_global_coefficient[color_id];
+                    blk->coefficient[count_values / 8][count_values % 8] = ctx->dc_global_coefficient[color_id];
+                    ++count_values;
                 }
                 else // 处理ac，稍微复杂
                 {
@@ -452,7 +508,8 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
                     uint8_t next_zero_count = (test_value >> 4) & 0x0F; // 高4位为接下来有几个0
                     for (int k = 0; k < next_zero_count; ++k)
                     {
-                        blk->coefficient[count_values++] = 0;
+                        blk->coefficient[count_values / 8][count_values % 8] = 0;
+                        ++count_values;
                     }
 
                     uint8_t next_value_bit_count = (test_value >> 0) & 0x0F; // 低4位为接下来的数需要读几个bit
@@ -467,7 +524,8 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
                             next_mask |= 0x01;
                         }
 
-                        blk->coefficient[count_values++] = calculate_coefficient_vli(next_value, next_mask);
+                        blk->coefficient[count_values / 8][count_values % 8] = calculate_coefficient_vli(next_value, next_mask);
+                        ++count_values;
                     }
                 }
                 found = 0;
@@ -482,11 +540,52 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
         }
     }
 
-    for (int i = 0; i < 64; ++i)
+    // 反量化
+    struct define_quantization_table *dqt = find_DQT_by_color_id(ctx, color_id);
+    for (int i = 0; i < 8; ++i)
     {
-        printf("%d ", blk->coefficient[i]);
+        for (int j = 0; j < 8; ++j)
+        {
+            blk->dequantized[i][j] = blk->coefficient[i][j] * dqt->values[i][j];
+        }
     }
-    printf("\n");
+
+    // 反zigzag
+    for (int i = 0; i < 8; ++i)
+    {
+        for (int j = 0; j < 8; ++j)
+        {
+            int index = dezigzag[i][j];
+            blk->dezigzaged[i][j] = blk->dequantized[index / 8][index % 8];
+        }
+    }
+
+    // 反离散余弦
+    for (int i = 0; i < 8; ++i)
+    {
+        for (int j = 0; j < 8; ++j)
+        {
+            for (int x = 0; x < 8; ++x)
+            {
+                for (int y = 0; y < 8; ++y)
+                {
+                    double c_x = x == 0 ? 1/sqrt(2):1;
+                    double c_y = y == 0 ? 1/sqrt(2):1;
+
+                    blk->idcted[i][j] = c_x * c_y * cos(((2 * i + 1) * x * PI) / 16) * cos(((2 * j + 1) * y * PI) / 16) * blk->dezigzaged[x][y];
+                }
+            }
+        }
+    }
+
+    for (int i = 0; i < 8; ++i)
+    {
+        for (int j = 0; j < 8; ++j)
+        {
+            printf("%3d ", blk->idcted[i][j]);
+        }
+        printf("\n");
+    }
 }
 
 void read_MCU(struct context *ctx, struct MCU *mcu)
