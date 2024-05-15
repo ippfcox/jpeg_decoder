@@ -447,7 +447,7 @@ struct define_quantization_table *find_DQT_by_color_id(struct context *ctx, int 
     return NULL;
 }
 
-int calculate_coefficient_vli(uint8_t value, uint8_t mask)
+int calculate_coefficient_vli(uint16_t value, uint16_t mask)
 {
     int value_bit_count = 0;
     uint8_t tmp = mask;
@@ -459,9 +459,23 @@ int calculate_coefficient_vli(uint8_t value, uint8_t mask)
 
     int coeff = (int)value;
     if (value >> (value_bit_count - 1) == 0)
-        coeff = -((!value) & mask);
+        coeff = -((~value) & mask);
 
     return coeff;
+}
+
+int get_next_vli_value(struct context *ctx, int next_value_bit_count)
+{
+    uint16_t next_value = 0, next_mask = 0;
+    for (int i = 0; i < next_value_bit_count; ++i)
+    {
+        next_value <<= 1;
+        next_value |= get_bit(ctx);
+        next_mask <<= 1;
+        next_mask |= 0x01;
+    }
+
+    return calculate_coefficient_vli(next_value, next_mask);
 }
 
 void read_block(struct context *ctx, int color_id, struct block *blk)
@@ -506,7 +520,7 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
                 if (!found_dc) // 如果之前没有dc，那么这个是dc，没有后续解析
                 {
                     found_dc = 1;
-                    ctx->dc_global_coefficient[color_id] += calculate_coefficient_vli(test_value, test_mask);
+                    ctx->dc_global_coefficient[color_id] += get_next_vli_value(ctx, test_value);
                     blk->coefficient[count_values / 8][count_values % 8] = ctx->dc_global_coefficient[color_id];
                     ++count_values;
                 }
@@ -528,22 +542,19 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
                     uint8_t next_value_bit_count = (test_value >> 0) & 0x0F; // 低4位为接下来的数需要读几个bit
                     if (next_value_bit_count > 0)
                     {
-                        uint16_t next_value = 0, next_mask = 0; // 读取指定bit出来的码字，需要使用VLI表进行解码
-                        for (int k = 0; k < next_value_bit_count; ++k)
-                        {
-                            next_value <<= 1;
-                            next_value |= get_bit(ctx);
-                            next_mask <<= 1;
-                            next_mask |= 0x01;
-                        }
-
-                        blk->coefficient[count_values / 8][count_values % 8] = calculate_coefficient_vli(next_value, next_mask);
+                        blk->coefficient[count_values / 8][count_values % 8] = get_next_vli_value(ctx, next_value_bit_count);
                         ++count_values;
                     }
                 }
-                found = 0;
                 break;
             }
+        }
+
+        if (!found)
+        {
+            log_("should be here, test_code: %x, test_mask: %x, dht: %d, %d, offset: %ld->%ld\n",
+                test_code, test_mask, dht->ac_dc_type, dht->table_id, ctx->compress_data - ctx->buffer, ctx->bit_offset);
+            exit(0);
         }
 
         if (found_0x00)
@@ -645,6 +656,7 @@ void write_data(struct context *ctx)
 {
     // [TODO] 暂时不考虑边缘部分
     FILE *fp = fopen("aaa.aaa", "wb");
+    FILE *fp2 = fopen("pixels.txt", "w");
 
     int horizontal_block_pixel_count = 8;
     int vertical_block_pixel_count = 8;
@@ -674,6 +686,7 @@ void write_data(struct context *ctx)
 
                 // log_("mcu: %d, %d, block: %d, %d, idcted: %d, %d\n", MCU_i, MCU_j, block_i, block_j, idcted_i, idcted_j);
                 fwrite(&ctx->MCUs[MCU_i][MCU_j].blocks[color_id][block_i][block_j].idcted[idcted_i][idcted_j], 1, 1, fp);
+                fprintf(fp2, "%d ", ctx->MCUs[MCU_i][MCU_j].blocks[color_id][block_i][block_j].idcted[idcted_i][idcted_j]);
             }
         }
     }
