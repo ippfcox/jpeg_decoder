@@ -142,7 +142,7 @@ struct block
 
 struct MCU
 {
-    struct block **Ys, **Cbs, **Crs;
+    struct block **blocks[4];
 };
 
 struct context
@@ -171,12 +171,8 @@ struct context
     int horizontal_MCU_count; // 横向MCU个数
     int vertical_MCU_count;   // 纵向MCU个数
 
-    int MCU_horizontal_Y_block_count;  // 1个MCU中Y分量横向block个数
-    int MCU_vertical_Y_block_count;    // 1个MCU中Y分量纵向block个数
-    int MCU_horizontal_Cb_block_count; // 1个MCU中Cb分量横向block个数
-    int MCU_vertical_Cb_block_count;   // 1个MCU中Cb分量纵向block个数
-    int MCU_horizontal_Cr_block_count; // 1个MCU中Cr分量横向block个数
-    int MCU_vertical_Cr_block_count;   // 1个MCU中Cr分量纵向block个数
+    int MCU_horizontal_block_counts[4];
+    int MCU_vertical_block_counts[4];
 };
 
 void usage(const char *name)
@@ -607,35 +603,17 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
 
 void read_MCU(struct context *ctx, struct MCU *mcu)
 {
-    mcu->Ys = calloc(ctx->MCU_vertical_Y_block_count, sizeof(struct block *));
-    for (int i = 0; i < ctx->MCU_vertical_Y_block_count; ++i)
+    for (int color_id = COLOR_ID_Y; color_id <= COLOR_ID_Cr; ++color_id)
     {
-        mcu->Ys[i] = calloc(ctx->MCU_horizontal_Y_block_count, sizeof(struct block));
-        for (int j = 0; j < ctx->MCU_horizontal_Y_block_count; ++j)
+        mcu->blocks[color_id] = calloc(ctx->MCU_vertical_block_counts[color_id], sizeof(struct block *));
+        for (int i = 0; i < ctx->MCU_vertical_block_counts[color_id]; ++i)
         {
-            // log_("block Y: row: %d, col: %d\n", i, j);
-            read_block(ctx, 1, &mcu->Ys[i][j]);
-        }
-    }
-    mcu->Cbs = calloc(ctx->MCU_vertical_Cb_block_count, sizeof(struct block *));
-    for (int i = 0; i < ctx->MCU_vertical_Cb_block_count; ++i)
-    {
-        mcu->Cbs[i] = calloc(ctx->MCU_horizontal_Cb_block_count, sizeof(struct block));
-        for (int j = 0; j < ctx->MCU_horizontal_Cb_block_count; ++j)
-        {
-            // log_("block Cb: row: %d, col: %d\n", i, j);
-            read_block(ctx, 1, &mcu->Cbs[i][j]);
-        }
-    }
-    mcu->Crs = calloc(ctx->MCU_vertical_Cr_block_count, sizeof(struct block *));
-    for (int i = 0; i < ctx->MCU_vertical_Cr_block_count; ++i)
-    {
-        mcu->Crs[i] = calloc(ctx->MCU_horizontal_Cr_block_count, sizeof(struct block));
-        for (int j = 0; j < ctx->MCU_horizontal_Cr_block_count; ++j)
-        {
-            // log_("block Cr: row: %d, col: %d\n", i, j);
-
-            read_block(ctx, 1, &mcu->Crs[i][j]);
+            mcu->blocks[color_id][i] = calloc(ctx->MCU_horizontal_block_counts[color_id], sizeof(struct block));
+            for (int j = 0; j < ctx->MCU_horizontal_block_counts[color_id]; ++j)
+            {
+                // log_("block Y: row: %d, col: %d\n", i, j);
+                read_block(ctx, 1, &mcu->blocks[color_id][i][j]);
+            }
         }
     }
 }
@@ -647,24 +625,8 @@ void read_compressed_data(struct context *ctx)
     for (int i = 0; i < ctx->SOF0.color_channel_count; ++i)
     {
         struct start_of_frame_0_channel_info *info = &ctx->SOF0.channel_info[i];
-        switch (info->color_id)
-        {
-        case 1:
-            ctx->MCU_horizontal_Y_block_count = info->horizontal_sample_rate;
-            ctx->MCU_vertical_Y_block_count = info->vertical_sample_rate;
-            break;
-        case 2:
-            ctx->MCU_horizontal_Cb_block_count = info->horizontal_sample_rate;
-            ctx->MCU_vertical_Cb_block_count = info->vertical_sample_rate;
-            break;
-        case 3:
-            ctx->MCU_horizontal_Cr_block_count = info->horizontal_sample_rate;
-            ctx->MCU_vertical_Cr_block_count = info->vertical_sample_rate;
-            break;
-        default:
-            log_("cannot get here!\n");
-            break;
-        }
+        ctx->MCU_horizontal_block_counts[info->color_id] = info->horizontal_sample_rate;
+        ctx->MCU_vertical_block_counts[info->color_id] = info->vertical_sample_rate;
     }
 
     ctx->MCUs = calloc(ctx->vertical_MCU_count, sizeof(struct MCU *));
@@ -684,31 +646,35 @@ void write_data(struct context *ctx)
     // [TODO] 暂时不考虑边缘部分
     FILE *fp = fopen("aaa.aaa", "wb");
 
-    int horizontal_Y_block_pixel_count = 8;
-    int vertical_Y_block_pixel_count = 8;
-    int horizontal_Y_MCU_pixel_count = ctx->MCU_horizontal_Y_block_count * 8;
-    int vertical_Y_MCU_pixel_count = ctx->MCU_vertical_Y_block_count * 8;
-    int horizontal_Y_pixel_count = ctx->horizontal_MCU_count * horizontal_Y_MCU_pixel_count;
-    int vertical_Y_pixel_count = ctx->vertical_MCU_count * vertical_Y_MCU_pixel_count;
+    int horizontal_block_pixel_count = 8;
+    int vertical_block_pixel_count = 8;
 
-    log_("block: %dx%d, mcu: %dx%d, pixel: %dx%d\n",
-        horizontal_Y_block_pixel_count, vertical_Y_block_pixel_count,
-        horizontal_Y_MCU_pixel_count, vertical_Y_MCU_pixel_count,
-        horizontal_Y_pixel_count, vertical_Y_pixel_count);
-
-    for (int i = 0; i < vertical_Y_pixel_count; ++i)
+    for (int color_id = COLOR_ID_Y; color_id <= COLOR_ID_Cr; ++color_id)
     {
-        int MCU_i = i / vertical_Y_MCU_pixel_count;
-        int block_i = i % vertical_Y_MCU_pixel_count / vertical_Y_block_pixel_count;
-        int idcted_i = i % vertical_Y_MCU_pixel_count % vertical_Y_block_pixel_count;
-        for (int j = 0; j < horizontal_Y_pixel_count; ++j)
-        {
-            int MCU_j = j / horizontal_Y_MCU_pixel_count;
-            int block_j = j % horizontal_Y_MCU_pixel_count / horizontal_Y_block_pixel_count;
-            int idcted_j = j % horizontal_Y_MCU_pixel_count % horizontal_Y_block_pixel_count;
+        int horizontal_MCU_pixel_count = ctx->MCU_horizontal_block_counts[color_id] * 8;
+        int vertical_MCU_pixel_count = ctx->MCU_vertical_block_counts[color_id] * 8;
+        int horizontal_pixel_count = ctx->horizontal_MCU_count * horizontal_MCU_pixel_count;
+        int vertical_pixel_count = ctx->vertical_MCU_count * vertical_MCU_pixel_count;
 
-            log_("mcu: %d, %d, block: %d, %d, idcted: %d, %d\n", MCU_i, MCU_j, block_i, block_j, idcted_i, idcted_j);
-            fwrite(&ctx->MCUs[MCU_i][MCU_j].Ys[block_i][block_j].idcted[idcted_i][idcted_j], 1, 1, fp);
+        log_("color_id: %d, block: %dx%d, mcu: %dx%d, pixel: %dx%d\n", color_id,
+            horizontal_block_pixel_count, vertical_block_pixel_count,
+            horizontal_MCU_pixel_count, vertical_MCU_pixel_count,
+            horizontal_pixel_count, vertical_pixel_count);
+
+        for (int i = 0; i < vertical_pixel_count; ++i)
+        {
+            int MCU_i = i / vertical_MCU_pixel_count;
+            int block_i = i % vertical_MCU_pixel_count / vertical_block_pixel_count;
+            int idcted_i = i % vertical_MCU_pixel_count % vertical_block_pixel_count;
+            for (int j = 0; j < horizontal_pixel_count; ++j)
+            {
+                int MCU_j = j / horizontal_MCU_pixel_count;
+                int block_j = j % horizontal_MCU_pixel_count / horizontal_block_pixel_count;
+                int idcted_j = j % horizontal_MCU_pixel_count % horizontal_block_pixel_count;
+
+                // log_("mcu: %d, %d, block: %d, %d, idcted: %d, %d\n", MCU_i, MCU_j, block_i, block_j, idcted_i, idcted_j);
+                fwrite(&ctx->MCUs[MCU_i][MCU_j].blocks[color_id][block_i][block_j].idcted[idcted_i][idcted_j], 1, 1, fp);
+            }
         }
     }
 }
