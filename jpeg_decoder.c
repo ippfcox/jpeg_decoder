@@ -19,15 +19,22 @@
 
 #define PI 3.14159265358923846
 
+#define COLOR_ID_Y 1
+#define COLOR_ID_Cb 2
+#define COLOR_ID_Cr 3
+
+#define BLOCK_HORIZONTAL_PIXEL_COUNT 8
+#define BLOCK_VERTICAL_PIXEL_COUNT 8
+
 uint8_t dezigzag[8][8] = {
-    {0,1,5,6,14,15,27,28,},
-    {2,4,7,13,16,26,29,42,},
-    {3,8,12,17,25,30,41,43,},
-    {9,11,18,24,31,40,44,53,},
-    {10,19,23,32,39,45,52,54,},
-    {20,22,33,38,46,51,55,60,},
-    {21,34,37,47,50,56,59,61,},
-    {35,36,48,49,57,58,62,63,},
+    {0, 1, 5, 6, 14, 15, 27, 28},
+    {2, 4, 7, 13, 16, 26, 29, 42},
+    {3, 8, 12, 17, 25, 30, 41, 43},
+    {9, 11, 18, 24, 31, 40, 44, 53},
+    {10, 19, 23, 32, 39, 45, 52, 54},
+    {20, 22, 33, 38, 46, 51, 55, 60},
+    {21, 34, 37, 47, 50, 56, 59, 61},
+    {35, 36, 48, 49, 57, 58, 62, 63},
 };
 
 const char *marker_name(int seg_id)
@@ -127,15 +134,15 @@ struct start_of_scan
 
 struct block
 {
-    int coefficient[8][8];
-    int dequantized[8][8];
-    int dezigzaged[8][8];
-    int idcted[8][8];
+    int coefficient[8][8]; // 直流系数和交流系数
+    int dequantized[8][8]; // 反量化结果
+    int dezigzaged[8][8];  // 反ZigZag结果
+    int idcted[8][8];      // IDCT结果
 };
 
 struct MCU
 {
-    struct block *Ys, *Cbs, *Crs;
+    struct block **Ys, **Cbs, **Crs;
 };
 
 struct context
@@ -159,7 +166,17 @@ struct context
     uint8_t *ptr_EOI;
 
     int dc_global_coefficient[4]; // 1为Y的，2为Cb的，3为Cr的
-    struct MCU *mcus;
+
+    struct MCU **MCUs;
+    int horizontal_MCU_count; // 横向MCU个数
+    int vertical_MCU_count;   // 纵向MCU个数
+
+    int MCU_horizontal_Y_block_count;  // 1个MCU中Y分量横向block个数
+    int MCU_vertical_Y_block_count;    // 1个MCU中Y分量纵向block个数
+    int MCU_horizontal_Cb_block_count; // 1个MCU中Cb分量横向block个数
+    int MCU_vertical_Cb_block_count;   // 1个MCU中Cb分量纵向block个数
+    int MCU_horizontal_Cr_block_count; // 1个MCU中Cr分量横向block个数
+    int MCU_vertical_Cr_block_count;   // 1个MCU中Cr分量纵向block个数
 };
 
 void usage(const char *name)
@@ -183,7 +200,7 @@ uint8_t get_bit(struct context *ctx)
     int byte_offset = ctx->bit_offset / 8;     // 所在字节的偏移量
     if (*(ctx->compress_data + byte_offset) == 0x00 && *(ctx->compress_data + byte_offset - 1) == 0xFF)
     {
-        log_("jump 0xFF00, offset: %lx-%ld\n", ctx->compress_data - ctx->buffer, ctx->bit_offset);
+        // log_("jump 0xFF00, offset: %lx-%ld\n", ctx->compress_data - ctx->buffer, ctx->bit_offset);
         ctx->bit_offset += 8;
     }
 
@@ -414,9 +431,9 @@ void find_DHT_by_color_id(struct context *ctx, int color_id, struct define_huffm
     }
 }
 
-struct define_quantization_table* find_DQT_by_color_id(struct context *ctx, int color_id)
+struct define_quantization_table *find_DQT_by_color_id(struct context *ctx, int color_id)
 {
-    for (int i = 0; i< ctx->SOF0.color_channel_count; ++i)
+    for (int i = 0; i < ctx->SOF0.color_channel_count; ++i)
     {
         struct start_of_frame_0_channel_info *info = &ctx->SOF0.channel_info[i];
         if (info->color_id == color_id)
@@ -569,8 +586,8 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
             {
                 for (int y = 0; y < 8; ++y)
                 {
-                    double c_x = x == 0 ? 1/sqrt(2):1;
-                    double c_y = y == 0 ? 1/sqrt(2):1;
+                    double c_x = x == 0 ? 1 / sqrt(2) : 1;
+                    double c_y = y == 0 ? 1 / sqrt(2) : 1;
 
                     blk->idcted[i][j] = c_x * c_y * cos(((2 * i + 1) * x * PI) / 16) * cos(((2 * j + 1) * y * PI) / 16) * blk->dezigzaged[x][y];
                 }
@@ -578,64 +595,120 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
         }
     }
 
-    for (int i = 0; i < 8; ++i)
-    {
-        for (int j = 0; j < 8; ++j)
-        {
-            printf("%3d ", blk->idcted[i][j]);
-        }
-        printf("\n");
-    }
+    // for (int i = 0; i < 8; ++i)
+    // {
+    //     for (int j = 0; j < 8; ++j)
+    //     {
+    //         printf("%3d ", blk->idcted[i][j]);
+    //     }
+    //     printf("\n");
+    // }
 }
 
 void read_MCU(struct context *ctx, struct MCU *mcu)
 {
-    int horizontal_Y_block_count = ctx->SOF0.channel_info[0].horizontal_sample_rate;
-    int vertical_Y_block_count = ctx->SOF0.channel_info[0].vertical_sample_rate;
-    int horizontal_Cb_block_count = ctx->SOF0.channel_info[1].horizontal_sample_rate;
-    int vertical_Cb_block_count = ctx->SOF0.channel_info[1].vertical_sample_rate;
-    int horizontal_Cr_block_count = ctx->SOF0.channel_info[2].horizontal_sample_rate;
-    int vertical_Cr_block_count = ctx->SOF0.channel_info[2].vertical_sample_rate;
-
-    mcu->Ys = calloc(horizontal_Y_block_count * vertical_Y_block_count, sizeof(struct block));
-    mcu->Cbs= calloc(horizontal_Cb_block_count * vertical_Cb_block_count, sizeof(struct block));
-    mcu->Crs = calloc(horizontal_Cr_block_count * vertical_Cr_block_count, sizeof(struct block));
-
-    for (int i = 0; i < vertical_Y_block_count; ++i)
+    mcu->Ys = calloc(ctx->MCU_vertical_Y_block_count, sizeof(struct block *));
+    for (int i = 0; i < ctx->MCU_vertical_Y_block_count; ++i)
     {
-        for (int j = 0; j < horizontal_Y_block_count; ++j)
+        mcu->Ys[i] = calloc(ctx->MCU_horizontal_Y_block_count, sizeof(struct block));
+        for (int j = 0; j < ctx->MCU_horizontal_Y_block_count; ++j)
         {
-            read_block(ctx, 1, &mcu->Ys[i * horizontal_Y_block_count + j]);
+            // log_("block Y: row: %d, col: %d\n", i, j);
+            read_block(ctx, 1, &mcu->Ys[i][j]);
         }
     }
-    for (int i = 0; i < vertical_Cb_block_count; ++i)
+    mcu->Cbs = calloc(ctx->MCU_vertical_Cb_block_count, sizeof(struct block *));
+    for (int i = 0; i < ctx->MCU_vertical_Cb_block_count; ++i)
     {
-        for (int j = 0; j < horizontal_Cb_block_count; ++j)
+        mcu->Cbs[i] = calloc(ctx->MCU_horizontal_Cb_block_count, sizeof(struct block));
+        for (int j = 0; j < ctx->MCU_horizontal_Cb_block_count; ++j)
         {
-            read_block(ctx, 2, &mcu->Ys[i * horizontal_Cb_block_count + j]);
+            // log_("block Cb: row: %d, col: %d\n", i, j);
+            read_block(ctx, 1, &mcu->Cbs[i][j]);
         }
     }
-    for (int i = 0; i < vertical_Cr_block_count; ++i)
+    mcu->Crs = calloc(ctx->MCU_vertical_Cr_block_count, sizeof(struct block *));
+    for (int i = 0; i < ctx->MCU_vertical_Cr_block_count; ++i)
     {
-        for (int j = 0; j < horizontal_Cr_block_count; ++j)
+        mcu->Crs[i] = calloc(ctx->MCU_horizontal_Cr_block_count, sizeof(struct block));
+        for (int j = 0; j < ctx->MCU_horizontal_Cr_block_count; ++j)
         {
-            read_block(ctx, 3, &mcu->Ys[i * horizontal_Cr_block_count + j]);
+            // log_("block Cr: row: %d, col: %d\n", i, j);
+
+            read_block(ctx, 1, &mcu->Crs[i][j]);
         }
     }
 }
 
 void read_compressed_data(struct context *ctx)
 {
-    int horizontal_MCU_count = ctx->SOF0.width / ctx->SOF0.channel_info[0].horizontal_sample_rate;
-    int vertical_MCU_count = ctx->SOF0.height / ctx->SOF0.channel_info[0].vertical_sample_rate;
-
-    ctx->mcus = calloc(horizontal_MCU_count * vertical_MCU_count, sizeof(struct MCU));
-
-    for (int i = 0; i < vertical_MCU_count; ++i)
+    ctx->horizontal_MCU_count = ctx->SOF0.width / ctx->SOF0.channel_info[0].horizontal_sample_rate / BLOCK_HORIZONTAL_PIXEL_COUNT;
+    ctx->vertical_MCU_count = ctx->SOF0.height / ctx->SOF0.channel_info[0].vertical_sample_rate / BLOCK_VERTICAL_PIXEL_COUNT;
+    for (int i = 0; i < ctx->SOF0.color_channel_count; ++i)
     {
-        for (int j = 0; j < horizontal_MCU_count; ++j)
+        struct start_of_frame_0_channel_info *info = &ctx->SOF0.channel_info[i];
+        switch (info->color_id)
         {
-            read_MCU(ctx, &ctx->mcus[i * horizontal_MCU_count + j]);
+        case 1:
+            ctx->MCU_horizontal_Y_block_count = info->horizontal_sample_rate;
+            ctx->MCU_vertical_Y_block_count = info->vertical_sample_rate;
+            break;
+        case 2:
+            ctx->MCU_horizontal_Cb_block_count = info->horizontal_sample_rate;
+            ctx->MCU_vertical_Cb_block_count = info->vertical_sample_rate;
+            break;
+        case 3:
+            ctx->MCU_horizontal_Cr_block_count = info->horizontal_sample_rate;
+            ctx->MCU_vertical_Cr_block_count = info->vertical_sample_rate;
+            break;
+        default:
+            log_("cannot get here!\n");
+            break;
+        }
+    }
+
+    ctx->MCUs = calloc(ctx->vertical_MCU_count, sizeof(struct MCU *));
+    for (int i = 0; i < ctx->vertical_MCU_count; ++i)
+    {
+        ctx->MCUs[i] = calloc(1, sizeof(struct MCU));
+        for (int j = 0; j < ctx->horizontal_MCU_count; ++j)
+        {
+            // log_("mcu: row: %d, col: %d\n", i, j);
+            read_MCU(ctx, &ctx->MCUs[i][j]);
+        }
+    }
+}
+
+void write_data(struct context *ctx)
+{
+    // [TODO] 暂时不考虑边缘部分
+    FILE *fp = fopen("aaa.aaa", "wb");
+
+    int horizontal_Y_block_pixel_count = 8;
+    int vertical_Y_block_pixel_count = 8;
+    int horizontal_Y_MCU_pixel_count = ctx->MCU_horizontal_Y_block_count * 8;
+    int vertical_Y_MCU_pixel_count = ctx->MCU_vertical_Y_block_count * 8;
+    int horizontal_Y_pixel_count = ctx->horizontal_MCU_count * horizontal_Y_MCU_pixel_count;
+    int vertical_Y_pixel_count = ctx->vertical_MCU_count * vertical_Y_MCU_pixel_count;
+
+    log_("block: %dx%d, mcu: %dx%d, pixel: %dx%d\n",
+        horizontal_Y_block_pixel_count, vertical_Y_block_pixel_count,
+        horizontal_Y_MCU_pixel_count, vertical_Y_MCU_pixel_count,
+        horizontal_Y_pixel_count, vertical_Y_pixel_count);
+
+    for (int i = 0; i < vertical_Y_pixel_count; ++i)
+    {
+        int MCU_i = i / vertical_Y_MCU_pixel_count;
+        int block_i = i % vertical_Y_MCU_pixel_count / vertical_Y_block_pixel_count;
+        int idcted_i = i % vertical_Y_MCU_pixel_count % vertical_Y_block_pixel_count;
+        for (int j = 0; j < horizontal_Y_pixel_count; ++j)
+        {
+            int MCU_j = j / horizontal_Y_MCU_pixel_count;
+            int block_j = j % horizontal_Y_MCU_pixel_count / horizontal_Y_block_pixel_count;
+            int idcted_j = j % horizontal_Y_MCU_pixel_count % horizontal_Y_block_pixel_count;
+
+            log_("mcu: %d, %d, block: %d, %d, idcted: %d, %d\n", MCU_i, MCU_j, block_i, block_j, idcted_i, idcted_j);
+            fwrite(&ctx->MCUs[MCU_i][MCU_j].Ys[block_i][block_j].idcted[idcted_i][idcted_j], 1, 1, fp);
         }
     }
 }
@@ -714,6 +787,10 @@ int main(int argc, char *argv[])
     // dump_SOS(ctx);
 
     read_compressed_data(ctx);
+
+    write_data(ctx);
+
+    // FILE *fp = fopen("mcu_16x16_i420.yuv", "wb");
 
 error:
 #define free_seg(type)                \
