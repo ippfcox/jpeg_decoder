@@ -559,9 +559,9 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
 
         if (!found)
         {
-            log_("should be here, test_code: %x, test_mask: %x, dht: %d, %d, offset: %ld->%ld\n",
+            log_("should not be here, test_code: %x, test_mask: %x, dht: %d, %d, offset: %ld->%ld\n",
                 test_code, test_mask, dht->ac_dc_type, dht->table_id, ctx->compress_data - ctx->buffer, ctx->bit_offset);
-            exit(0);
+            // exit(0);
         }
 
         if (found_0x00)
@@ -596,16 +596,18 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
     {
         for (int j = 0; j < 8; ++j)
         {
+            double v = 0;
             for (int x = 0; x < 8; ++x)
             {
                 for (int y = 0; y < 8; ++y)
                 {
-                    double c_x = x == 0 ? 1 / sqrt(2) : 1;
-                    double c_y = y == 0 ? 1 / sqrt(2) : 1;
+                    double c_x = x == 0 ? 1.0f / sqrt(2) : 1.0f;
+                    double c_y = y == 0 ? 1.0f / sqrt(2) : 1.0f;
 
-                    blk->idcted[i][j] += c_x * c_y * cos(((2 * i + 1) * x * PI) / 16) * cos(((2 * j + 1) * y * PI) / 16) * blk->dezigzaged[x][y];
+                    v += c_x * c_y * cos(((2 * i + 1) * x * PI) / 16) * cos(((2 * j + 1) * y * PI) / 16) * blk->dezigzaged[x][y];
                 }
             }
+            blk->idcted[i][j] = v;
         }
     }
 
@@ -686,9 +688,9 @@ void read_compressed_data(struct context *ctx)
             int Cb = ctx->MCUs[MCU_i][MCU_j].blocks[COLOR_ID_Cb][block_i / 2][block_j / 2].idcted[idcted_i][idcted_j];
             int Cr = ctx->MCUs[MCU_i][MCU_j].blocks[COLOR_ID_Cr][block_i / 2][block_j / 2].idcted[idcted_i][idcted_j];
 
-            int R = clip(Y + 1.402f * Cr + 128.0, 0, 255);
-            int G = clip(Y - 0.34414f * Cb - 0.71414f * Cr + 128.0, 0, 255);
-            int B = clip(Y + 1.772f * Cb + 128.0, 0, 255);
+            int R = clip(Y + 1.402f * (Cr - 128.0), 0, 255);
+            int G = clip(Y - 0.34414f * (Cb - 128.0) - 0.714136f * (Cr - 128.0), 0, 255);
+            int B = clip(Y + 1.772f * (Cb - 128.0), 0, 255);
 
             ctx->RGBs[ptr++] = (uint8_t)R;
             ctx->RGBs[ptr++] = (uint8_t)G;
@@ -859,7 +861,7 @@ int main(int argc, char *argv[])
     }
 
     // dump_DQTs(ctx);
-    // dump_DHTs(ctx);
+    dump_DHTs(ctx);
     // dump_SOF0(ctx);
     // dump_SOS(ctx);
 

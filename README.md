@@ -23,3 +23,11 @@ $$
 $$
 C_i = 1, \forall i > 0
 $$
+
+以lena为原图进行解码测试
+
+![lena origin](pic/lena_848x448.jpg)
+
+解码出了轮廓，Y分量似乎差不太多了，UV还差很多：
+
+![lena failed1](pic/lena_848x448_failed1.png)
