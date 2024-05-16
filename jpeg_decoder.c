@@ -525,7 +525,9 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
                     dht = ac_dht; // 找到了dc，接下来切换到交流表
                     ctx->dc_global_coefficient[color_id] += get_next_vli_value(ctx, test_value);
                     blk->coefficient[count_values / 8][count_values % 8] = ctx->dc_global_coefficient[color_id];
-                    log_("dc test code: %x, mask: %x, value: %x, vli: %d\n", test_code, test_mask, test_value, blk->coefficient[count_values / 8][count_values % 8]);
+                    // log_("dc test code: %x, mask: %x, value: %x, vli: %d(%p), blk: %p, count: %d\n",
+                    //     test_code, test_mask, test_value, blk->coefficient[count_values / 8][count_values % 8],
+                    //     &blk->coefficient[count_values / 8][count_values % 8], blk, count_values);
                     ++count_values;
                 }
                 else // 处理ac，稍微复杂
@@ -569,8 +571,6 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
         }
     }
 
-    // exit(0);
-
     // 反量化
     struct define_quantization_table *dqt = find_DQT_by_color_id(ctx, color_id);
     for (int i = 0; i < 8; ++i)
@@ -603,7 +603,7 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
                     double c_x = x == 0 ? 1 / sqrt(2) : 1;
                     double c_y = y == 0 ? 1 / sqrt(2) : 1;
 
-                    blk->idcted[i][j] = c_x * c_y * cos(((2 * i + 1) * x * PI) / 16) * cos(((2 * j + 1) * y * PI) / 16) * blk->dezigzaged[x][y];
+                    blk->idcted[i][j] += c_x * c_y * cos(((2 * i + 1) * x * PI) / 16) * cos(((2 * j + 1) * y * PI) / 16) * blk->dezigzaged[x][y];
                 }
             }
         }
@@ -650,7 +650,7 @@ void read_compressed_data(struct context *ctx)
     ctx->MCUs = calloc(ctx->vertical_MCU_count, sizeof(struct MCU *));
     for (int i = 0; i < ctx->vertical_MCU_count; ++i)
     {
-        ctx->MCUs[i] = calloc(1, sizeof(struct MCU));
+        ctx->MCUs[i] = calloc(ctx->horizontal_MCU_count, sizeof(struct MCU));
         for (int j = 0; j < ctx->horizontal_MCU_count; ++j)
         {
             // log_("mcu: row: %d, col: %d\n", i, j);
@@ -867,7 +867,7 @@ int main(int argc, char *argv[])
 
     dump_txts(ctx);
 
-    // write_data(ctx);
+    write_data(ctx);
 
 error:
 #define free_seg(type)                \
