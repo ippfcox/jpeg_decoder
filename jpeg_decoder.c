@@ -6,8 +6,9 @@
 #include <errno.h>
 #include "log.h"
 
-#define max(a, b) ((a) > (b) ? (a) : (b))
-#define min(a, b) ((a) < (b) ? (a) : (b))
+#define max(_a, _b) ((_a) > (_b) ? (_a) : (_b))
+#define min(_a, _b) ((_a) < (_b) ? (_a) : (_b))
+#define clip(_min, _max, _val) min(max((_min), (_val)), (_max))
 
 #define SEG_SOI 0xD8  // start of image
 #define SEG_APP0 0xE0 // application 0
@@ -173,6 +174,9 @@ struct context
 
     int MCU_horizontal_block_counts[4];
     int MCU_vertical_block_counts[4];
+
+    uint8_t *RGBs;
+    int data_length;
 };
 
 void usage(const char *name)
@@ -485,14 +489,10 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
     find_DHT_by_color_id(ctx, color_id, &dc_dht, &ac_dht); // Y是1
     // [TODO] check pointer
 
-    int found_dc = 0;                          // 标识是否处理了第一个数（直流分量），这会影响使用哪个DHT
     int found_0x00 = 0;                        // 标识是否遇到了0x00，如果遇到，说明该block解析结束
     struct define_huffman_table *dht = dc_dht; // 首先查找直流分量
     while (count_values < 64)                  // 一共就64个数
     {
-        if (found_dc)
-            dht = ac_dht; // 找到了直流分量尝试查找交流分量
-
         uint16_t test_code = 0, test_mask = 0; // 要与霍夫曼表匹配的码字和mask
         uint8_t test_value = 0;                // 霍夫曼表中该码字对应的值
         int found = 0;                         // 标识查找到当前码字
@@ -517,9 +517,9 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
 
             if (found) // 与霍夫曼表成功匹配，解析值
             {
-                if (!found_dc) // 如果之前没有dc，那么这个是dc，没有后续解析
+                if (count_values == 0) // 第一个是直流分量，处理之后后面都是交流分量
                 {
-                    found_dc = 1;
+                    dht = ac_dht; // 找到了dc，接下来切换到交流表
                     ctx->dc_global_coefficient[color_id] += get_next_vli_value(ctx, test_value);
                     blk->coefficient[count_values / 8][count_values % 8] = ctx->dc_global_coefficient[color_id];
                     ++count_values;
@@ -623,7 +623,7 @@ void read_MCU(struct context *ctx, struct MCU *mcu)
             for (int j = 0; j < ctx->MCU_horizontal_block_counts[color_id]; ++j)
             {
                 // log_("block Y: row: %d, col: %d\n", i, j);
-                read_block(ctx, 1, &mcu->blocks[color_id][i][j]);
+                read_block(ctx, color_id, &mcu->blocks[color_id][i][j]);
             }
         }
     }
@@ -650,16 +650,106 @@ void read_compressed_data(struct context *ctx)
             read_MCU(ctx, &ctx->MCUs[i][j]);
         }
     }
+
+    log_("current offset: %ld, %ld, %lf\n", ctx->compress_data - ctx->buffer, ctx->bit_offset, ctx->compress_data - ctx->buffer + ctx->bit_offset / 8.0f);
+
+    // 转RGB
+    int horizontal_MCU_pixel_count = ctx->MCU_horizontal_block_counts[COLOR_ID_Y] * 8;
+    int vertical_MCU_pixel_count = ctx->MCU_vertical_block_counts[COLOR_ID_Y] * 8;
+    int horizontal_pixel_count = ctx->horizontal_MCU_count * horizontal_MCU_pixel_count;
+    int vertical_pixel_count = ctx->vertical_MCU_count * vertical_MCU_pixel_count;
+
+    ctx->data_length = vertical_pixel_count * horizontal_pixel_count * 3;
+    ctx->RGBs = calloc(ctx->data_length, sizeof(uint8_t));
+
+    int ptr = 0;
+
+    for (int i = 0; i < vertical_pixel_count; ++i)
+    {
+        int MCU_i = i / vertical_MCU_pixel_count;
+        int block_i = i % vertical_MCU_pixel_count / BLOCK_VERTICAL_PIXEL_COUNT;
+        int idcted_i = i % vertical_MCU_pixel_count % BLOCK_VERTICAL_PIXEL_COUNT;
+        for (int j = 0; j < horizontal_pixel_count; ++j)
+        {
+            int MCU_j = j / horizontal_MCU_pixel_count;
+            int block_j = j % horizontal_MCU_pixel_count / BLOCK_HORIZONTAL_PIXEL_COUNT;
+            int idcted_j = j % horizontal_MCU_pixel_count % BLOCK_HORIZONTAL_PIXEL_COUNT;
+
+            int Y = ctx->MCUs[MCU_i][MCU_j].blocks[COLOR_ID_Y][block_i][block_j].idcted[idcted_i][idcted_j];
+            int Cb = ctx->MCUs[MCU_i][MCU_j].blocks[COLOR_ID_Cb][block_i / 2][block_j / 2].idcted[idcted_i][idcted_j];
+            int Cr = ctx->MCUs[MCU_i][MCU_j].blocks[COLOR_ID_Cr][block_i / 2][block_j / 2].idcted[idcted_i][idcted_j];
+
+            int R = clip(Y + 1.402f * Cr + 128.0, 0, 255);
+            int G = clip(Y - 0.34414f * Cb - 0.71414f * Cr + 128.0, 0, 255);
+            int B = clip(Y + 1.772f * Cb + 128.0, 0, 255);
+
+            ctx->RGBs[ptr++] = (uint8_t)R;
+            ctx->RGBs[ptr++] = (uint8_t)G;
+            ctx->RGBs[ptr++] = (uint8_t)B;
+        }
+    }
+}
+
+void dump_txts(struct context *ctx)
+{
+    FILE *fp_coefficient = fopen("debug_coefficients.txt", "w");
+    FILE *fp_dequantized = fopen("debug_dequantized.txt", "w");
+    FILE *fp_dezigzaged = fopen("debug_dezigzaged.txt", "w");
+    FILE *fp_idcted = fopen("debug_idcted.txt", "w");
+
+    for (int MCU_i = 0; MCU_i < ctx->vertical_MCU_count; ++MCU_i)
+    {
+        for (int MCU_j = 0; MCU_j < ctx->horizontal_MCU_count; ++MCU_j)
+        {
+            struct MCU *mcu = &ctx->MCUs[MCU_i][MCU_j];
+            for (int color_id = COLOR_ID_Y; color_id <= COLOR_ID_Cr; ++color_id)
+            {
+                for (int block_i = 0; block_i < ctx->MCU_vertical_block_counts[color_id]; ++block_i)
+                {
+                    for (int block_j = 0; block_j < ctx->MCU_horizontal_block_counts[color_id]; ++block_j)
+                    {
+                        struct block *blk = &mcu->blocks[color_id][block_i][block_j];
+
+                        fprintf(fp_coefficient, "mcu: (%d, %d), color_id: %d, block: (%d, %d)\n", MCU_i, MCU_j, color_id, block_i, block_j);
+                        fprintf(fp_dequantized, "mcu: (%d, %d), color_id: %d, block: (%d, %d)\n", MCU_i, MCU_j, color_id, block_i, block_j);
+                        fprintf(fp_dezigzaged, "mcu: (%d, %d), color_id: %d, block: (%d, %d)\n", MCU_i, MCU_j, color_id, block_i, block_j);
+                        fprintf(fp_idcted, "mcu: (%d, %d), color_id: %d, block: (%d, %d)\n", MCU_i, MCU_j, color_id, block_i, block_j);
+                        for (int i = 0; i < 8; ++i)
+                        {
+                            for (int j = 0; j < 8; ++j)
+                            {
+                                fprintf(fp_coefficient, "%-8d\t", blk->coefficient[i][j]);
+                                fprintf(fp_dequantized, "%-8d\t", blk->dequantized[i][j]);
+                                fprintf(fp_dezigzaged, "%-8d\t", blk->dezigzaged[i][j]);
+                                fprintf(fp_idcted, "%-8d\t", blk->idcted[i][j]);
+                            }
+                            fprintf(fp_coefficient, "\n");
+                            fprintf(fp_dequantized, "\n");
+                            fprintf(fp_dezigzaged, "\n");
+                            fprintf(fp_idcted, "\n");
+                        }
+                        fprintf(fp_coefficient, "\n");
+                        fprintf(fp_dequantized, "\n");
+                        fprintf(fp_dezigzaged, "\n");
+                        fprintf(fp_idcted, "\n");
+                    }
+                }
+            }
+        }
+    }
+
+    fclose(fp_coefficient);
+    fclose(fp_dequantized);
+    fclose(fp_dezigzaged);
+    fclose(fp_idcted);
 }
 
 void write_data(struct context *ctx)
 {
     // [TODO] 暂时不考虑边缘部分
-    FILE *fp = fopen("aaa.aaa", "wb");
+    FILE *fp = fopen("YCbCr_420P.yuv", "wb");
     FILE *fp2 = fopen("pixels.txt", "w");
-
-    int horizontal_block_pixel_count = 8;
-    int vertical_block_pixel_count = 8;
+    FILE *fp3 = fopen("RGB24.yuv", "wb");
 
     for (int color_id = COLOR_ID_Y; color_id <= COLOR_ID_Cr; ++color_id)
     {
@@ -668,21 +758,20 @@ void write_data(struct context *ctx)
         int horizontal_pixel_count = ctx->horizontal_MCU_count * horizontal_MCU_pixel_count;
         int vertical_pixel_count = ctx->vertical_MCU_count * vertical_MCU_pixel_count;
 
-        log_("color_id: %d, block: %dx%d, mcu: %dx%d, pixel: %dx%d\n", color_id,
-            horizontal_block_pixel_count, vertical_block_pixel_count,
+        log_("color_id: %d, mcu: %dx%d, pixel: %dx%d\n", color_id,
             horizontal_MCU_pixel_count, vertical_MCU_pixel_count,
             horizontal_pixel_count, vertical_pixel_count);
 
         for (int i = 0; i < vertical_pixel_count; ++i)
         {
             int MCU_i = i / vertical_MCU_pixel_count;
-            int block_i = i % vertical_MCU_pixel_count / vertical_block_pixel_count;
-            int idcted_i = i % vertical_MCU_pixel_count % vertical_block_pixel_count;
+            int block_i = i % vertical_MCU_pixel_count / BLOCK_VERTICAL_PIXEL_COUNT;
+            int idcted_i = i % vertical_MCU_pixel_count % BLOCK_VERTICAL_PIXEL_COUNT;
             for (int j = 0; j < horizontal_pixel_count; ++j)
             {
                 int MCU_j = j / horizontal_MCU_pixel_count;
-                int block_j = j % horizontal_MCU_pixel_count / horizontal_block_pixel_count;
-                int idcted_j = j % horizontal_MCU_pixel_count % horizontal_block_pixel_count;
+                int block_j = j % horizontal_MCU_pixel_count / BLOCK_HORIZONTAL_PIXEL_COUNT;
+                int idcted_j = j % horizontal_MCU_pixel_count % BLOCK_HORIZONTAL_PIXEL_COUNT;
 
                 // log_("mcu: %d, %d, block: %d, %d, idcted: %d, %d\n", MCU_i, MCU_j, block_i, block_j, idcted_i, idcted_j);
                 fwrite(&ctx->MCUs[MCU_i][MCU_j].blocks[color_id][block_i][block_j].idcted[idcted_i][idcted_j], 1, 1, fp);
@@ -690,6 +779,8 @@ void write_data(struct context *ctx)
             }
         }
     }
+
+    fwrite(ctx->RGBs, 1, ctx->data_length, fp3);
 }
 
 int main(int argc, char *argv[])
@@ -767,9 +858,9 @@ int main(int argc, char *argv[])
 
     read_compressed_data(ctx);
 
-    write_data(ctx);
+    dump_txts(ctx);
 
-    // FILE *fp = fopen("mcu_16x16_i420.yuv", "wb");
+    // write_data(ctx);
 
 error:
 #define free_seg(type)                \
