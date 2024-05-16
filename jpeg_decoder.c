@@ -465,6 +465,8 @@ int calculate_coefficient_vli(uint16_t value, uint16_t mask)
     if (value >> (value_bit_count - 1) == 0)
         coeff = -((~value) & mask);
 
+    // log_("vlied: %d\n", coeff);
+
     return coeff;
 }
 
@@ -478,6 +480,7 @@ int get_next_vli_value(struct context *ctx, int next_value_bit_count)
         next_mask <<= 1;
         next_mask |= 0x01;
     }
+    // log_("bit_count: %d, next_value: %x, next_mask: %x\n", next_value_bit_count, next_value, next_mask);
 
     return calculate_coefficient_vli(next_value, next_mask);
 }
@@ -522,6 +525,7 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
                     dht = ac_dht; // 找到了dc，接下来切换到交流表
                     ctx->dc_global_coefficient[color_id] += get_next_vli_value(ctx, test_value);
                     blk->coefficient[count_values / 8][count_values % 8] = ctx->dc_global_coefficient[color_id];
+                    log_("dc test code: %x, mask: %x, value: %x, vli: %d\n", test_code, test_mask, test_value, blk->coefficient[count_values / 8][count_values % 8]);
                     ++count_values;
                 }
                 else // 处理ac，稍微复杂
@@ -540,6 +544,7 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
                     }
 
                     uint8_t next_value_bit_count = (test_value >> 0) & 0x0F; // 低4位为接下来的数需要读几个bit
+                    // log_("zero count: %d, ac test code: %x, mask: %x, value: %x\n", next_zero_count, test_code, test_mask, test_value);
                     if (next_value_bit_count > 0)
                     {
                         blk->coefficient[count_values / 8][count_values % 8] = get_next_vli_value(ctx, next_value_bit_count);
@@ -563,6 +568,8 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
             break;
         }
     }
+
+    // exit(0);
 
     // 反量化
     struct define_quantization_table *dqt = find_DQT_by_color_id(ctx, color_id);
@@ -718,10 +725,10 @@ void dump_txts(struct context *ctx)
                         {
                             for (int j = 0; j < 8; ++j)
                             {
-                                fprintf(fp_coefficient, "%-8d\t", blk->coefficient[i][j]);
-                                fprintf(fp_dequantized, "%-8d\t", blk->dequantized[i][j]);
-                                fprintf(fp_dezigzaged, "%-8d\t", blk->dezigzaged[i][j]);
-                                fprintf(fp_idcted, "%-8d\t", blk->idcted[i][j]);
+                                fprintf(fp_coefficient, "%8d\t", blk->coefficient[i][j]);
+                                fprintf(fp_dequantized, "%8d\t", blk->dequantized[i][j]);
+                                fprintf(fp_dezigzaged, "%8d\t", blk->dezigzaged[i][j]);
+                                fprintf(fp_idcted, "%8d\t", blk->idcted[i][j]);
                             }
                             fprintf(fp_coefficient, "\n");
                             fprintf(fp_dequantized, "\n");
