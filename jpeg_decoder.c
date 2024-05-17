@@ -18,7 +18,7 @@
 #define SEG_SOS 0xDA  // start of scan
 #define SEG_EOI 0xD9  // end of image
 
-#define PI 3.14159265358923846
+#define PI 3.14159265358923846f
 
 #define COLOR_ID_Y 1
 #define COLOR_ID_Cb 2
@@ -62,8 +62,8 @@ struct define_quantization_table
     uint8_t *ptr;          // 包含0xFFDB
     int length;            // 不包含0xFFDB，包含长度字节的总长度
     int quantization_size; // 标识字节的高4位，标识每个量化值大小，0:1byte/1:2bytes
-    int id;                // 标识字节的低4位，id可为0/1/2/3
-    uint8_t values[8][8];  // 表值
+    int table_id;          // 标识字节的低4位，id可为0/1/2/3
+    uint16_t values[8][8]; // 表值
 };
 
 struct define_huffman_table_code_item
@@ -225,13 +225,13 @@ void read_DQT(struct context *ctx)
     dqt->length = get_2bytes(ctx);
     uint8_t byte = get_byte(ctx);
     dqt->quantization_size = (byte >> 4) & 0x0F;
-    dqt->id = byte & 0x0F;
+    dqt->table_id = byte & 0x0F;
 
     for (int i = 0; i < 8; ++i)
     {
         for (int j = 0; j < 8; ++j)
         {
-            dqt->values[i][j] = get_byte(ctx);
+            dqt->values[i][j] = dqt->quantization_size == 0 ? get_byte(ctx) : get_2bytes(ctx);
         }
     }
 }
@@ -243,7 +243,7 @@ void dump_DQTs(struct context *ctx)
     for (int i = 0; i < ctx->count_DQTs; ++i)
     {
         struct define_quantization_table *dqt = &ctx->DQTs[i];
-        printf(" %p\t%ld\t%d\t%d\t\t%d\n", dqt->ptr, dqt->ptr - ctx->buffer, dqt->length, dqt->quantization_size, dqt->id);
+        printf(" %p\t%ld\t%d\t%d\t\t%d\n", dqt->ptr, dqt->ptr - ctx->buffer, dqt->length, dqt->quantization_size, dqt->table_id);
         for (int j = 0; j < 8; ++j)
         {
             printf("  ");
@@ -440,7 +440,7 @@ struct define_quantization_table *find_DQT_by_color_id(struct context *ctx, int 
         {
             for (int j = 0; j < ctx->count_DQTs; ++j)
             {
-                if (ctx->DQTs[j].id == info->dqt_table_id)
+                if (ctx->DQTs[j].table_id == info->dqt_table_id)
                 {
                     return &ctx->DQTs[j];
                 }
@@ -524,7 +524,7 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
                 {
                     dht = ac_dht; // 找到了dc，接下来切换到交流表
                     ctx->dc_global_coefficient[color_id] += get_next_vli_value(ctx, test_value);
-                    blk->coefficient[count_values / 8][count_values % 8] = ctx->dc_global_coefficient[color_id];
+                    blk->coefficient[0][0] = ctx->dc_global_coefficient[color_id];
                     // log_("dc test code: %x, mask: %x, value: %x, vli: %d(%p), blk: %p, count: %d\n",
                     //     test_code, test_mask, test_value, blk->coefficient[count_values / 8][count_values % 8],
                     //     &blk->coefficient[count_values / 8][count_values % 8], blk, count_values);
@@ -538,14 +538,20 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
                         break;
                     }
 
-                    uint8_t next_zero_count = (test_value >> 4) & 0x0F; // 高4位为接下来有几个0
+                    uint8_t next_zero_count = (test_value >> 4) & 0x0F;      // 高4位为接下来有几个0
+                    uint8_t next_value_bit_count = (test_value >> 0) & 0x0F; // 低4位为接下来的数需要读几个bit
+                    if (test_value == 0xF0)
+                    {
+                        next_zero_count = 16;
+                        next_value_bit_count = 0;
+                    }
+
                     for (int k = 0; k < next_zero_count; ++k)
                     {
                         blk->coefficient[count_values / 8][count_values % 8] = 0;
                         ++count_values;
                     }
 
-                    uint8_t next_value_bit_count = (test_value >> 0) & 0x0F; // 低4位为接下来的数需要读几个bit
                     // log_("zero count: %d, ac test code: %x, mask: %x, value: %x\n", next_zero_count, test_code, test_mask, test_value);
                     if (next_value_bit_count > 0)
                     {
@@ -755,10 +761,17 @@ void dump_txts(struct context *ctx)
 
 void write_data(struct context *ctx)
 {
+    int width = ctx->horizontal_MCU_count * ctx->MCU_horizontal_block_counts[COLOR_ID_Y] * 8;
+    int height = ctx->vertical_MCU_count * ctx->MCU_vertical_block_counts[COLOR_ID_Y] * 8;
+
+    char YCbCr_filename[128] = {0}, RGB24_filename[128] = {0};
+    snprintf(YCbCr_filename, 128, "decoded_%dx%d_I420.yuv", width, height);
+    snprintf(RGB24_filename, 128, "decoded_%dx%d_RGB24.yuv", width, height);
+
     // [TODO] 暂时不考虑边缘部分
-    FILE *fp = fopen("YCbCr_420P.yuv", "wb");
-    FILE *fp2 = fopen("pixels.txt", "w");
-    FILE *fp3 = fopen("RGB24.yuv", "wb");
+    FILE *fp = fopen(YCbCr_filename, "wb");
+    FILE *fp2 = fopen("debug_pixels.txt", "w");
+    FILE *fp3 = fopen(RGB24_filename, "wb");
 
     for (int color_id = COLOR_ID_Y; color_id <= COLOR_ID_Cr; ++color_id)
     {
@@ -782,9 +795,9 @@ void write_data(struct context *ctx)
                 int block_j = j % horizontal_MCU_pixel_count / BLOCK_HORIZONTAL_PIXEL_COUNT;
                 int idcted_j = j % horizontal_MCU_pixel_count % BLOCK_HORIZONTAL_PIXEL_COUNT;
 
-                // log_("mcu: %d, %d, block: %d, %d, idcted: %d, %d\n", MCU_i, MCU_j, block_i, block_j, idcted_i, idcted_j);
-                fwrite(&ctx->MCUs[MCU_i][MCU_j].blocks[color_id][block_i][block_j].idcted[idcted_i][idcted_j], 1, 1, fp);
-                fprintf(fp2, "%d ", ctx->MCUs[MCU_i][MCU_j].blocks[color_id][block_i][block_j].idcted[idcted_i][idcted_j]);
+                int YCbCr_pixel = ctx->MCUs[MCU_i][MCU_j].blocks[color_id][block_i][block_j].idcted[idcted_i][idcted_j];
+                fwrite(&YCbCr_pixel, 1, 1, fp);
+                fprintf(fp2, "%d ", YCbCr_pixel);
             }
         }
     }
@@ -861,7 +874,7 @@ int main(int argc, char *argv[])
     }
 
     // dump_DQTs(ctx);
-    dump_DHTs(ctx);
+    // dump_DHTs(ctx);
     // dump_SOF0(ctx);
     // dump_SOS(ctx);
 
