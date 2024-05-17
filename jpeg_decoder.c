@@ -18,7 +18,7 @@
 #define SEG_SOS 0xDA  // start of scan
 #define SEG_EOI 0xD9  // end of image
 
-#define PI 3.14159265358923846f
+#define PI 3.14159265358979323846f
 
 #define COLOR_ID_Y 1
 #define COLOR_ID_Cb 2
