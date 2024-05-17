@@ -5,3 +5,4 @@ compile_commands.json
 *.d
 *.out
 debug_*.txt
+*.yuv

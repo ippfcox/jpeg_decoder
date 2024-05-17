@@ -689,13 +689,13 @@ void read_compressed_data(struct context *ctx)
             int block_j = j % horizontal_MCU_pixel_count / BLOCK_HORIZONTAL_PIXEL_COUNT;
             int idcted_j = j % horizontal_MCU_pixel_count % BLOCK_HORIZONTAL_PIXEL_COUNT;
 
-            int Y = ctx->MCUs[MCU_i][MCU_j].blocks[COLOR_ID_Y][block_i][block_j].idcted[idcted_i][idcted_j];
-            int Cb = ctx->MCUs[MCU_i][MCU_j].blocks[COLOR_ID_Cb][block_i / 2][block_j / 2].idcted[idcted_i][idcted_j];
-            int Cr = ctx->MCUs[MCU_i][MCU_j].blocks[COLOR_ID_Cr][block_i / 2][block_j / 2].idcted[idcted_i][idcted_j];
+            int Y = ctx->MCUs[MCU_i][MCU_j].blocks[COLOR_ID_Y][block_i][block_j].idcted[idcted_i][idcted_j] % 256;
+            int Cb = (ctx->MCUs[MCU_i][MCU_j].blocks[COLOR_ID_Cb][block_i / 2][block_j / 2].idcted[idcted_i][idcted_j] + 128) % 256;
+            int Cr = (ctx->MCUs[MCU_i][MCU_j].blocks[COLOR_ID_Cr][block_i / 2][block_j / 2].idcted[idcted_i][idcted_j] + 128) % 256;
 
-            int R = clip(Y + 1.402f * (Cr - 128.0), 0, 255);
-            int G = clip(Y - 0.34414f * (Cb - 128.0) - 0.714136f * (Cr - 128.0), 0, 255);
-            int B = clip(Y + 1.772f * (Cb - 128.0), 0, 255);
+            int R = (65536 * Y + 91881 * (Cr - 128)) >> 16;
+            int G = (65536 * Y - 22554 * (Cb - 128) - 46802 * (Cr - 128)) >> 16;
+            int B = (65536 * Y + 116130 * (Cb - 128)) >> 16;
 
             ctx->RGBs[ptr++] = (uint8_t)R;
             ctx->RGBs[ptr++] = (uint8_t)G;
@@ -798,12 +798,11 @@ void write_data(struct context *ctx)
                 uint8_t YCbCr_pixel = 0;
                 if (color_id != COLOR_ID_Y)
                 {
-                    YCbCr_idcted += 128;
-                    YCbCr_pixel = YCbCr_idcted % 256;
+                    YCbCr_pixel = (YCbCr_idcted + 128) % 256;
                 }
                 else
                 {
-                    YCbCr_pixel = YCbCr_idcted % 128 + 128;
+                    YCbCr_pixel = YCbCr_idcted % 256;
                 }
                 fwrite(&YCbCr_pixel, 1, 1, fp);
                 fprintf(fp2, "%d ", YCbCr_pixel);
