@@ -243,7 +243,7 @@ void dump_DQTs(struct context *ctx)
     for (int i = 0; i < ctx->count_DQTs; ++i)
     {
         struct define_quantization_table *dqt = &ctx->DQTs[i];
-        printf(" %p\t%ld\t%d\t%d\t\t%d\n", dqt->ptr, dqt->ptr - ctx->buffer, dqt->length, dqt->quantization_size, dqt->table_id);
+        printf(" %p\t%lx\t%d\t%d\t\t%d\n", dqt->ptr, dqt->ptr - ctx->buffer, dqt->length, dqt->quantization_size, dqt->table_id);
         for (int j = 0; j < 8; ++j)
         {
             printf("  ");
@@ -253,6 +253,7 @@ void dump_DQTs(struct context *ctx)
             }
             printf("\n");
         }
+        printf("\n");
     }
     printf("\n");
 }
@@ -312,7 +313,7 @@ void dump_DHTs(struct context *ctx)
     for (int i = 0; i < ctx->count_DHTs; ++i)
     {
         struct define_huffman_table *dht = &ctx->DHTs[i];
-        printf(" %p\t%ld\t%d\t%d\t%d\n", dht->ptr, dht->ptr - ctx->buffer, dht->length, dht->ac_dc_type, dht->table_id);
+        printf(" %p\t%lx\t%d\t%d\t%d\n", dht->ptr, dht->ptr - ctx->buffer, dht->length, dht->ac_dc_type, dht->table_id);
         printf("  code\tvalue\tmask\n");
         for (int j = 0; j < min(dht->leave_count_total, 20); ++j)
         {
@@ -353,7 +354,7 @@ void dump_SOF0(struct context *ctx)
     struct start_of_frame_0 *sof0 = &ctx->SOF0;
     printf("SOF0\n");
     printf(" virtual addr\toffset\tlength\taccuracy\tresolution\tchannel count(3)\n");
-    printf(" %p\t%ld\t%d\t%d\t\t%dx%d\t\t%d\n",
+    printf(" %p\t%lx\t%d\t%d\t\t%dx%d\t\t%d\n",
         sof0->ptr, sof0->ptr - ctx->buffer, sof0->length, sof0->accuracy, sof0->width, sof0->height, sof0->color_channel_count);
     printf("  color id\thorizontal sample rate\tvertical sample rate\tdqt id\n");
     for (int i = 0; i < sof0->color_channel_count; ++i)
@@ -393,7 +394,7 @@ void dump_SOS(struct context *ctx)
 
     printf("SOS\n");
     printf(" virtual addr\toffset\tlength\tcolor channel count\t[not for baseline]\n");
-    printf(" %p\t%ld\t%d\t%d\t\t\t0x%02x%02x%02x\n",
+    printf(" %p\t%lx\t%d\t%d\t\t\t0x%02x%02x%02x\n",
         sos->ptr, sos->ptr - ctx->buffer, sos->length, sos->color_channel_count, sos->not_baseline_0, sos->not_baseline_1, sos->not_baseline_2);
     printf("  color id\tdc dht id\tac dht id\n");
     for (int i = 0; i < sos->color_channel_count; ++i)
@@ -525,9 +526,6 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
                     dht = ac_dht; // 找到了dc，接下来切换到交流表
                     ctx->dc_global_coefficient[color_id] += get_next_vli_value(ctx, test_value);
                     blk->coefficient[0][0] = ctx->dc_global_coefficient[color_id];
-                    // log_("dc test code: %x, mask: %x, value: %x, vli: %d(%p), blk: %p, count: %d\n",
-                    //     test_code, test_mask, test_value, blk->coefficient[count_values / 8][count_values % 8],
-                    //     &blk->coefficient[count_values / 8][count_values % 8], blk, count_values);
                     ++count_values;
                 }
                 else // 处理ac，稍微复杂
@@ -666,7 +664,8 @@ void read_compressed_data(struct context *ctx)
         }
     }
 
-    log_("current offset: %ld, %ld, %lf\n", ctx->compress_data - ctx->buffer, ctx->bit_offset, ctx->compress_data - ctx->buffer + ctx->bit_offset / 8.0f);
+    // 去掉头的压缩数据起始点 + 读取的bit长度 / 8 + EOI
+    log_("file length: %d, read length: %lf\n", ctx->length, ctx->compress_data - ctx->buffer + ctx->bit_offset / 8.0f + 2);
 
     // 转RGB
     int horizontal_MCU_pixel_count = ctx->MCU_horizontal_block_counts[COLOR_ID_Y] * 8;
@@ -796,9 +795,16 @@ void write_data(struct context *ctx)
                 int idcted_j = j % horizontal_MCU_pixel_count % BLOCK_HORIZONTAL_PIXEL_COUNT;
 
                 int YCbCr_idcted = ctx->MCUs[MCU_i][MCU_j].blocks[color_id][block_i][block_j].idcted[idcted_i][idcted_j];
+                uint8_t YCbCr_pixel = 0;
                 if (color_id != COLOR_ID_Y)
+                {
                     YCbCr_idcted += 128;
-                uint8_t YCbCr_pixel = YCbCr_idcted % 256;
+                    YCbCr_pixel = YCbCr_idcted % 256;
+                }
+                else
+                {
+                    YCbCr_pixel = YCbCr_idcted % 128 + 128;
+                }
                 fwrite(&YCbCr_pixel, 1, 1, fp);
                 fprintf(fp2, "%d ", YCbCr_pixel);
             }
