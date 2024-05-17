@@ -613,7 +613,7 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
                     v += c_x * c_y * cos(((2 * i + 1) * x * PI) / 16) * cos(((2 * j + 1) * y * PI) / 16) * blk->dezigzaged[x][y];
                 }
             }
-            blk->idcted[i][j] = v;
+            blk->idcted[i][j] = v / 4;
         }
     }
 
@@ -795,7 +795,10 @@ void write_data(struct context *ctx)
                 int block_j = j % horizontal_MCU_pixel_count / BLOCK_HORIZONTAL_PIXEL_COUNT;
                 int idcted_j = j % horizontal_MCU_pixel_count % BLOCK_HORIZONTAL_PIXEL_COUNT;
 
-                int YCbCr_pixel = ctx->MCUs[MCU_i][MCU_j].blocks[color_id][block_i][block_j].idcted[idcted_i][idcted_j];
+                int YCbCr_idcted = ctx->MCUs[MCU_i][MCU_j].blocks[color_id][block_i][block_j].idcted[idcted_i][idcted_j];
+                if (color_id != COLOR_ID_Y)
+                    YCbCr_idcted += 128;
+                uint8_t YCbCr_pixel = YCbCr_idcted % 256;
                 fwrite(&YCbCr_pixel, 1, 1, fp);
                 fprintf(fp2, "%d ", YCbCr_pixel);
             }

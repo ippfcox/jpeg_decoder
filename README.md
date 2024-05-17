@@ -31,3 +31,7 @@ $$
 解码出了轮廓，Y分量似乎差不太多了，UV还差很多：
 
 ![lena failed1](pic/lena_848x448_failed1.png)
+
+几乎已经成功了，UV好像是正确的，但Y不正确
+
+![lena failed2](pic/lena_848x448_failed2.png)
