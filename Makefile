@@ -25,3 +25,4 @@ $(OBJS_CPP): %.cpp.o: %.cpp
 clean:
 	rm -f $(EXE_NAME)
 	rm -f $(OBJS_C) $(OBJS_CPP)
+	rm -f *.yuv *.txt

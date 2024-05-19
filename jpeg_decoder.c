@@ -102,35 +102,35 @@ struct start_of_frame_0_channel_info
 // 各颜色分量详细信息，以下表重复3次
 struct start_of_frame_0
 {
-    uint8_t *ptr;
-    int length;
-    int accuracy;
-    int height;
-    int width;
-    int color_channel_count;
-    struct start_of_frame_0_channel_info channel_info[3];
+    uint8_t *ptr;                                         // 包含0xFFC0
+    int length;                                           // 不包含0xFFC0，包含长度字节的总长度
+    int accuracy;                                         // baseline的精度固定为8
+    int height;                                           // 图像高
+    int width;                                            // 图像宽
+    int color_channel_count;                              // 颜色分量个数
+    struct start_of_frame_0_channel_info channel_info[3]; // 每个颜色分量的详细信息
 };
 
 //          |颜色分量id|直流霍夫曼表id|交流霍夫曼表id|
 // 长度(bit)|8         |4             |4             |
 struct start_of_scan_channel_info
 {
-    int color_id;
-    int dc_dht_id;
-    int ac_dht_id;
+    int color_id;  // 颜色分量id：1:Y/2:Cb/3:Cr
+    int dc_dht_id; // 该颜色分量使用的DHT直流表id
+    int ac_dht_id; // 该颜色分量使用的DHT交流表id
 };
 
 //          |区段头0xFFDA|段长|颜色分量数目|对应霍夫曼表|baseline无用|
 // 长度(bit)|16          |16  |8           |48          |24          |
 struct start_of_scan
 {
-    uint8_t *ptr;
-    int length;
-    int color_channel_count;
-    struct start_of_scan_channel_info channel_info[3];
-    uint8_t not_baseline_0;
-    uint8_t not_baseline_1;
-    uint8_t not_baseline_2;
+    uint8_t *ptr;                                      // 包含0xFFDA
+    int length;                                        // 不包含0xFFDA，包含长度字节的总长度
+    int color_channel_count;                           // 颜色分量个数
+    struct start_of_scan_channel_info channel_info[3]; // 各颜色分量的详细信息
+    uint8_t not_baseline_0;                            // baseline流程用不到
+    uint8_t not_baseline_1;                            // baseline流程用不到
+    uint8_t not_baseline_2;                            // baseline流程用不到
 };
 
 struct block
@@ -143,16 +143,16 @@ struct block
 
 struct MCU
 {
-    struct block **blocks[4];
+    struct block **blocks[4]; // 由于这里颜色分量id为1/2/3，因此配置长度为4，0不使用
 };
 
 struct context
 {
-    FILE *fp;
-    int length;
-    uint8_t *buffer;
-    uint8_t *ptr;      // running pointer
-    size_t bit_offset; // running
+    FILE *fp;          // 文件指针
+    int length;        // 文件长度
+    uint8_t *buffer;   // 读取整个文件的指针
+    uint8_t *ptr;      // 在整个内存中以字节为单位游走的指针
+    size_t bit_offset; // 在压缩数据区以bit为单位游走的偏移量
 
     uint8_t *ptr_SOI;
     uint8_t **ptr_APP0s;
@@ -166,17 +166,17 @@ struct context
     uint8_t *compress_data;
     uint8_t *ptr_EOI;
 
-    int dc_global_coefficient[4]; // 1为Y的，2为Cb的，3为Cr的
+    int dc_global_coefficient[4]; // 全局dc差分偏移量，1:Y/2:Cb/3:Cr
 
-    struct MCU **MCUs;
+    struct MCU **MCUs;        // 全部MCU
     int horizontal_MCU_count; // 横向MCU个数
     int vertical_MCU_count;   // 纵向MCU个数
 
-    int MCU_horizontal_block_counts[4];
-    int MCU_vertical_block_counts[4];
+    int MCU_horizontal_block_counts[4]; // 每个MCU中横向block个数
+    int MCU_vertical_block_counts[4];   // 每个MCU中纵向block个数
 
-    uint8_t *RGBs;
-    int data_length;
+    uint8_t *RGBs;   // 最终RGB值
+    int data_length; // RGB的数据长度
 };
 
 void usage(const char *name)
@@ -200,20 +200,10 @@ uint8_t get_bit(struct context *ctx)
     int byte_offset = ctx->bit_offset / 8;     // 所在字节的偏移量
     if (*(ctx->compress_data + byte_offset) == 0x00 && *(ctx->compress_data + byte_offset - 1) == 0xFF)
     {
-        // log_("jump 0xFF00, offset: %lx-%ld\n", ctx->compress_data - ctx->buffer, ctx->bit_offset);
         ctx->bit_offset += 8;
     }
 
     return ((*(ctx->compress_data + ctx->bit_offset / 8)) >> (7 - ctx->bit_offset++ % 8)) & 0x01;
-}
-
-uint16_t read_bits(struct context *ctx, int start, int length)
-{
-    uint32_t v = *(uint32_t *)(ctx->compress_data + start / 8);
-    uint32_t mask = ((0x01 << length) - 1) << start;
-    uint16_t result = (uint16_t)((v & mask) >> start);
-
-    return result;
 }
 
 void read_DQT(struct context *ctx)
@@ -270,26 +260,23 @@ void read_DHT(struct context *ctx)
     dht->table_id = byte & 0x0F;
 
     struct define_huffman_table_code_item item = {0x0000, 0x0001};
-    // uint8_t test_dht_counts[] = {0x00, 0x02, 0x02, 0x00, 0x05, 0x01, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
     int item_index = 0;
     for (int i = 0; i < 16; ++i)
     {
         dht->leave_counts[i] = get_byte(ctx); // 该层个数
         if (dht->leave_counts[i] != 0)
         {
-            // dht->leave_counts[i] = test_dht_counts[i];
             dht->leave_count_total += dht->leave_counts[i];
             dht->items = realloc(dht->items, dht->leave_count_total * sizeof(struct define_huffman_table_code_item));
             for (int j = 0; j < dht->leave_counts[i]; ++j) // 计算该层每个码字
             {
                 dht->items[item_index++] = item;
-                // printf("len: %d, id: %d, code: %x, mask: %x\n", i + 1, j, item.code, item.mask);
                 ++item.code; // 存在数目的情况下码字要先+1
             }
         }
-        item.code <<= 1; // 再左移
-        item.mask <<= 1; // mask要先左移
-        ++item.mask;     // 再+1
+        item.code <<= 1;   // 再左移
+        item.mask <<= 1;   // mask要先左移
+        item.mask |= 0x01; // 再+1
     }
     for (int i = 0; i < dht->leave_count_total; ++i)
     {
@@ -299,11 +286,6 @@ void read_DHT(struct context *ctx)
     {
         log_("DHT %d seems not simple\n", ctx->count_DHTs - 1);
     }
-
-    // for (int i = 0; i < dht->leave_count_total; ++i)
-    // {
-    //     printf("code: %x, mask: %x, value: %02x\n", dht->items[i].code, dht->items[i].mask, dht->items[i].value);
-    // }
 }
 
 void dump_DHTs(struct context *ctx)
@@ -466,8 +448,6 @@ int calculate_coefficient_vli(uint16_t value, uint16_t mask)
     if (value >> (value_bit_count - 1) == 0)
         coeff = -((~value) & mask);
 
-    // log_("vlied: %d\n", coeff);
-
     return coeff;
 }
 
@@ -481,7 +461,6 @@ int get_next_vli_value(struct context *ctx, int next_value_bit_count)
         next_mask <<= 1;
         next_mask |= 0x01;
     }
-    // log_("bit_count: %d, next_value: %x, next_mask: %x\n", next_value_bit_count, next_value, next_mask);
 
     return calculate_coefficient_vli(next_value, next_mask);
 }
@@ -490,7 +469,7 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
 {
     int count_values = 0;
     struct define_huffman_table *dc_dht = NULL, *ac_dht = NULL;
-    find_DHT_by_color_id(ctx, color_id, &dc_dht, &ac_dht); // Y是1
+    find_DHT_by_color_id(ctx, color_id, &dc_dht, &ac_dht);
     // [TODO] check pointer
 
     int found_0x00 = 0;                        // 标识是否遇到了0x00，如果遇到，说明该block解析结束
@@ -506,7 +485,6 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
             test_code |= get_bit(ctx);
             test_mask <<= 1;
             test_mask |= 0x01;
-            // printf("test_code: %x\n", test_code);
             for (int j = 0; j < dht->leave_count_total; ++j) // 遍历dht表
             {
                 struct define_huffman_table_code_item *item = &dht->items[j];
@@ -514,7 +492,6 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
                 {
                     found = 1;
                     test_value = item->value;
-                    // printf("code: %x, value: %x, mask: %x\n", item->code, item->value, item->mask);
                     break;
                 }
             }
@@ -550,7 +527,6 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
                         ++count_values;
                     }
 
-                    // log_("zero count: %d, ac test code: %x, mask: %x, value: %x\n", next_zero_count, test_code, test_mask, test_value);
                     if (next_value_bit_count > 0)
                     {
                         blk->coefficient[count_values / 8][count_values % 8] = get_next_vli_value(ctx, next_value_bit_count);
@@ -570,7 +546,6 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
 
         if (found_0x00)
         {
-            // log_("found 0x00, finish, total: %d\n", count_values);
             break;
         }
     }
@@ -614,15 +589,6 @@ void read_block(struct context *ctx, int color_id, struct block *blk)
             blk->idcted[i][j] = v / 4;
         }
     }
-
-    // for (int i = 0; i < 8; ++i)
-    // {
-    //     for (int j = 0; j < 8; ++j)
-    //     {
-    //         printf("%3d ", blk->idcted[i][j]);
-    //     }
-    //     printf("\n");
-    // }
 }
 
 void read_MCU(struct context *ctx, struct MCU *mcu)
@@ -635,7 +601,6 @@ void read_MCU(struct context *ctx, struct MCU *mcu)
             mcu->blocks[color_id][i] = calloc(ctx->MCU_horizontal_block_counts[color_id], sizeof(struct block));
             for (int j = 0; j < ctx->MCU_horizontal_block_counts[color_id]; ++j)
             {
-                // log_("block Y: row: %d, col: %d\n", i, j);
                 read_block(ctx, color_id, &mcu->blocks[color_id][i][j]);
             }
         }
@@ -659,7 +624,6 @@ void read_compressed_data(struct context *ctx)
         ctx->MCUs[i] = calloc(ctx->horizontal_MCU_count, sizeof(struct MCU));
         for (int j = 0; j < ctx->horizontal_MCU_count; ++j)
         {
-            // log_("mcu: row: %d, col: %d\n", i, j);
             read_MCU(ctx, &ctx->MCUs[i][j]);
         }
     }
@@ -877,8 +841,6 @@ int main(int argc, char *argv[])
         case SEG_SOS: read_SOS(ctx); break;
         case SEG_EOI: ctx->ptr_EOI = ctx->ptr - 2; break;
         }
-
-        // log_("marker: %lu %s\n", ctx->ptr - ctx->buffer, marker_name(byte));
     }
 
     // dump_DQTs(ctx);
