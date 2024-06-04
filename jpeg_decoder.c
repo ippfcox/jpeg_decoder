@@ -437,7 +437,7 @@ struct define_quantization_table *find_DQT_by_color_id(struct context *ctx, int 
 int calculate_coefficient_vli(uint16_t value, uint16_t mask)
 {
     int value_bit_count = 0;
-    uint8_t tmp = mask;
+    uint16_t tmp = mask;
     while (tmp)
     {
         tmp &= (tmp - 1);
