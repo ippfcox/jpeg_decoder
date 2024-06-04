@@ -759,15 +759,7 @@ void write_data(struct context *ctx)
                 int idcted_j = j % horizontal_MCU_pixel_count % BLOCK_HORIZONTAL_PIXEL_COUNT;
 
                 int YCbCr_idcted = ctx->MCUs[MCU_i][MCU_j].blocks[color_id][block_i][block_j].idcted[idcted_i][idcted_j];
-                uint8_t YCbCr_pixel = 0;
-                if (color_id != COLOR_ID_Y)
-                {
-                    YCbCr_pixel = (YCbCr_idcted + 128) % 256;
-                }
-                else
-                {
-                    YCbCr_pixel = YCbCr_idcted % 256;
-                }
+                uint8_t YCbCr_pixel = (YCbCr_idcted + 128) % 256;
                 fwrite(&YCbCr_pixel, 1, 1, fp);
                 fprintf(fp2, "%d ", YCbCr_pixel);
             }
