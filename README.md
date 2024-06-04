@@ -15,11 +15,11 @@ a simple jpeg decoder, implement from zero to learn its compress algorithm.
 
 ## 目前状态
 
-差一点就可以正常解析出图像了，以lena为原图进行解码测试
+可以正常解析部分图像了！
 
 ![lena origin](pic/lena_848x448.jpg)
 
-![lena failed2](pic/lena_848x448_failed2.png)
+![lena succeed](pic/lena_848x448_succeed.png)
 
 ## 这个解码器还有哪些工作没有做？
 
@@ -28,7 +28,9 @@ a simple jpeg decoder, implement from zero to learn its compress algorithm.
 3. 一个DHT段可能包含多个DHT表，这里也没有进行处理
 4. 未对可能出现的RSTn进行处理
 
-## 为何解码出来的图像不正常？
+## ~~为何解码出来的图像不正常？~~
+
+__旧的分析__
 
 从上面给出的例子来看，大体上是可以看出基本正确的，但有些色块不正常，目前没有时间进行完善修复了，这里记录当前的分析过程
 
@@ -38,7 +40,9 @@ a simple jpeg decoder, implement from zero to learn its compress algorithm.
 4. 回溯分析到读取block结束的部分，此时会获取所有MCU的所有block的直流分量和交流分量，发现是存在一些不正常的：
   - Y分量的直流分量越来越大，到最后已经达到了30000以上，而Cb和Cr均没有这样的情况
 
-感觉上问题可能出现在这里，但尚未确定
+__分析__
+
+问题已经解决了，原因很蠢，就是在处理直流分量时，mask由传入的16位误写为了8位，导致数据异常，就是本来是一个负数，但是经过一个8位的mask之后前面的符号位都被置0了，导致变成了正数，进而导致直流分量错误无限积累。而在这个过程中，Cb和Cr的直流分量的变化量没有那么大，导致最终没有出现异常
 
 ## 粗略写一下解析流程
 
